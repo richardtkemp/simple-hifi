@@ -13,8 +13,8 @@
 #   /srv/music/<name>/  one folder per playlist; drop music in over ssh (rsync).
 #                       Each playlist plays in name order and loops; folders rotate in name order.
 #   tplayer-pair        opens pairing for 254 s; then press the RODRET's pair button 4 times
-#   RODRET top (I)      play / pause
-#   RODRET bottom (O)   next playlist, from its first track, playing
+#   RODRET top (I)      play / pause; double press = next track
+#   RODRET bottom (O)   next playlist, resuming where it was left, playing
 #   holds               ignored
 set -euo pipefail
 
@@ -214,8 +214,8 @@ step "Installing player scripts"
 cat > /usr/local/bin/tplayer <<'EOF'
 #!/usr/bin/env bash
 # simple-hifi player. Each folder directly under the music directory is a playlist.
-#   RODRET top (on)     play / pause
-#   RODRET bottom (off) next playlist, from its first track, playing
+#   RODRET top (on)     play / pause; double press = next track
+#   RODRET bottom (off) next playlist, resuming where it was left, playing
 #   holds               ignored
 # The queue always holds the current playlist's files in name order, looping.
 # shellcheck disable=SC2317  # functions run through with_lock
@@ -226,6 +226,9 @@ export LC_ALL=C
 STATE_DIR=${STATE_DIRECTORY:-/var/lib/tplayer}
 CURRENT=$STATE_DIR/current
 LOCK=$STATE_DIR/lock
+POS_DIR=$STATE_DIR/positions
+DOUBLE_WINDOW=0.6
+mkdir -p "$POS_DIR"
 
 # One playlist change at a time (button loop and sync loop share the queue).
 with_lock() { { flock 9 && "$@"; } 9>"$LOCK"; }
@@ -281,29 +284,87 @@ sync_queue() {
   done < <(mpc listall "$cur" | sort)
 }
 
+# Where each playlist was left: one file per playlist, "<song file>\t<seconds>".
+pos_path() { printf '%s/%s' "$POS_DIR" "$(printf '%s' "$1" | md5sum | cut -c1-32)"; }
+
+# "1:02:03" or "2:03" -> seconds.
+to_seconds() { awk -F: '{ s = 0; for (i = 1; i <= NF; i++) s = s * 60 + $i; print s }' <<<"$1"; }
+
+save_position() {
+  local playlist=$1 file elapsed
+  file=$(mpc -f '%file%' current)
+  if [[ -z $file ]]; then return 0; fi
+  # Status line looks like: "[playing] #2/5   0:42/3:10 (22%)"; take the elapsed part.
+  elapsed=$(mpc status | sed -n 's|.* \([0-9:][0-9:]*\)/[0-9:][0-9:]* .*|\1|p' | head -n 1)
+  printf '%s\t%s\n' "$file" "$(to_seconds "${elapsed:-0}")" > "$(pos_path "$playlist")"
+}
+
+# Queue must already hold the playlist. Plays from the saved song and second,
+# or from the first song if nothing is saved or the saved song is gone.
+resume_playlist() {
+  local playlist=$1 saved file="" secs=0 pos=""
+  saved=$(pos_path "$playlist")
+  if [[ -f $saved ]]; then IFS=$'\t' read -r file secs < "$saved" || true; fi
+  if [[ -n $file ]]; then
+    pos=$(mpc -f '%file%' playlist | grep -nxF -- "$file" | head -n 1 | cut -d: -f1 || true)
+  fi
+  if [[ -n $pos ]]; then
+    mpc -q play "$pos"
+    if [[ ${secs:-0} -gt 0 ]]; then
+      mpc -q seek "$(printf '%d:%02d:%02d' $(( secs / 3600 )) $(( secs / 60 % 60 )) $(( secs % 60 )))"
+    fi
+  else
+    mpc -q play 1
+  fi
+}
+
 next_playlist() {
   local all cur next
   all=$(playlists)
   [[ -n $all ]] || return 0
   cur=$(current_playlist)
+  if [[ -n $cur ]]; then save_position "$cur"; fi
   # The line after the current one, wrapping to the first.
   next=$(awk -v cur="$cur" 'found { print; exit } $0 == cur { found = 1 }' <<<"$all")
   [[ -n $next ]] || next=$(head -n 1 <<<"$all")
   printf '%s\n' "$next" > "$CURRENT"
   mpc -q clear
   sync_queue
-  mpc -q play
+  resume_playlist "$next"
 }
 
+action_of() { jq -r '.action // empty' <<<"$1"; }
+
+# A RODRET double press arrives as two "on" events. So after an "on", wait
+# DOUBLE_WINDOW seconds for a second one before treating it as play/pause.
 buttons() {
-  local msg action
-  mosquitto_sub -h localhost -t 'zigbee2mqtt/+' | while IFS= read -r msg; do
-    if ! action=$(jq -r '.action // empty' <<<"$msg"); then continue; fi
-    case $action in
-      on)  mpc -q toggle ;;
-      off) with_lock next_playlist ;;
-    esac
-  done
+  mosquitto_sub -h localhost -t 'zigbee2mqtt/+' | {
+    local msg msg2 action pending=""
+    while true; do
+      if [[ -n $pending ]]; then
+        msg=$pending; pending=""
+      else
+        IFS= read -r msg || break
+      fi
+      if ! action=$(action_of "$msg"); then continue; fi
+      case $action in
+        on)
+          if IFS= read -r -t "$DOUBLE_WINDOW" msg2; then
+            if [[ $(action_of "$msg2") == on ]]; then
+              mpc -q next
+              mpc -q play
+              continue
+            fi
+            pending=$msg2
+          fi
+          mpc -q toggle
+          ;;
+        off)
+          with_lock next_playlist
+          ;;
+      esac
+    done
+  }
 }
 
 watch_library() {
@@ -362,6 +423,6 @@ Done. Next:
        rsync -av ~/kids-music/ $OWNER@$(hostname):$MUSIC/
      e.g. $MUSIC/1-nursery/..., $MUSIC/2-greek/...   (playlists rotate in name order)
   2. Pair remote:  tplayer-pair
-  3. Test:         top button = play/pause, bottom button = next playlist.
+  3. Test:         top = play/pause (double press = next track), bottom = next playlist.
 Logs: journalctl -u zigbee2mqtt -u tplayer -u mpd -f
 EOF
