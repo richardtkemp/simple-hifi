@@ -161,7 +161,7 @@ cat <<EOF
 
 Done. The card is ejected.
   1. Put it in the Pi (dongle and speakers can go in now or later).
-  2. Power on and leave it: first boot installs everything and reboots once (expect 30-60 min on a Pi 3).
+  2. Power on and leave it: first boot installs everything and reboots once (roughly 10-20 min on a Pi 3; not yet timed).
   3. Then:  ssh $PI_USER@$PI_HOST.local
             tail -f /var/log/tplayer-setup.log      (ends with "Done.")
             tplayer-pair

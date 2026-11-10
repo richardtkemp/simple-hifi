@@ -28,6 +28,8 @@ OWNER=${OWNER:-${SUDO_USER:-}}
 
 MUSIC=/srv/music
 Z2M=/opt/zigbee2mqtt
+# Prebuilt npm release (no compile on the Pi). Tested: 2.14.3 installs and starts with no build.
+Z2M_VERSION=2.14.3
 Z2M_DATA=/var/lib/zigbee2mqtt
 ZIGBEE_CHANNEL=25   # 15, 20 and 25 sit between the common Wi-Fi channels 1, 6 and 11
 WIFI_COUNTRY=GB
@@ -80,17 +82,16 @@ done
 
 step "Installing packages"
 apt-get update
-apt-get install -y mpd mpc mosquitto mosquitto-clients jq git curl ca-certificates make g++ gcc libsystemd-dev
+apt-get install -y mpd mpc mosquitto mosquitto-clients jq curl ca-certificates
 
 node_major=$(node --version 2>/dev/null | sed -n 's/^v\([0-9]*\).*/\1/p' || true)
 if [[ $node_major != 22 && $node_major != 24 ]]; then
   step "Installing Node.js 24 (NodeSource)"
-  # Pinned to 24: zigbee2mqtt needs 22/24, and Node 25+ no longer ships corepack (pnpm).
+  # Debian's own nodejs is too old: zigbee2mqtt needs 22 or 24.
   curl -fsSL https://deb.nodesource.com/setup_24.x -o /tmp/nodesource_setup.sh
   bash /tmp/nodesource_setup.sh
   apt-get install -y nodejs
 fi
-corepack enable
 
 # ---------------------------------------------------------------- low-write system
 step "Keeping SD card writes low"
@@ -145,14 +146,13 @@ systemctl enable mpd.service
 systemctl restart mpd.service
 
 # ---------------------------------------------------------------- zigbee2mqtt
-step "Installing zigbee2mqtt (the build takes a while on a Pi 3)"
+step "Installing zigbee2mqtt $Z2M_VERSION (prebuilt npm package)"
 systemctl enable --now mosquitto.service
-if [[ ! -d $Z2M/.git ]]; then
-  mkdir -p "$Z2M"
-  chown "$OWNER": "$Z2M"
-  sudo -u "$OWNER" git clone --depth 1 https://github.com/Koenkk/zigbee2mqtt.git "$Z2M"
-fi
-sudo -u "$OWNER" env COREPACK_ENABLE_DOWNLOAD_PROMPT=0 bash -c "cd '$Z2M' && pnpm install --frozen-lockfile && pnpm run prepack"
+mkdir -p "$Z2M"
+chown "$OWNER": "$Z2M"
+# --omit=optional skips unix-dgram, the one dependency that would need a compiler
+# (it only provides systemd notify, so the unit below is Type=simple).
+sudo -H -u "$OWNER" bash -c "cd '$Z2M' && npm install --omit=optional --no-audit --no-fund 'zigbee2mqtt@$Z2M_VERSION'"
 
 mkdir -p "$Z2M_DATA"
 chown "$OWNER": "$Z2M_DATA"
@@ -189,15 +189,14 @@ After=network.target mosquitto.service
 Requires=mosquitto.service
 
 [Service]
-Type=notify
+Type=simple
 User=$OWNER
 SupplementaryGroups=dialout
-WorkingDirectory=$Z2M
+WorkingDirectory=$Z2M/node_modules/zigbee2mqtt
 Environment=NODE_ENV=production
 Environment=ZIGBEE2MQTT_DATA=$Z2M_DATA
 Environment=Z2M_ONBOARD_NO_SERVER=1
 ExecStart=/usr/bin/node index.js
-WatchdogSec=10s
 Restart=always
 RestartSec=10s
 
