@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # the music player: Raspberry Pi 3 + USB speakers + Sonoff ZBDongle-E + IKEA RODRET.
 #
-# Run once on a fresh Raspberry Pi OS Lite (64-bit), logged in as your normal user,
-# with the USB speakers and the Zigbee dongle plugged in:
+# Run once on a fresh Raspberry Pi OS Lite (64-bit), logged in as your normal user.
+# The Zigbee dongle and USB speakers can be plugged in at any time, before or after:
 #
 #     sudo ./setup.sh
 #
@@ -33,20 +33,8 @@ ZIGBEE_CHANNEL=25   # 15, 20 and 25 sit between the common Wi-Fi channels 1, 6 a
 WIFI_COUNTRY=GB
 
 # ---------------------------------------------------------------- preflight
-step "Checking hardware"
+step "Checking the OS"
 [[ $(uname -m) == aarch64 ]] || die "this is $(uname -m); flash the 64-bit Pi OS Lite (zigbee2mqtt is dropping 32-bit)"
-
-shopt -s nullglob
-dongles=(/dev/serial/by-id/*)
-shopt -u nullglob
-[[ ${#dongles[@]} -eq 1 ]] || die "expected exactly 1 serial device in /dev/serial/by-id, found ${#dongles[@]}: plug in the Zigbee dongle (and only it)"
-DONGLE=${dongles[0]}
-echo "Zigbee dongle: $DONGLE"
-
-mapfile -t cards < <(sed -n 's/^ *[0-9]\+ \[\([^] ]*\) *\]: USB-Audio.*/\1/p' /proc/asound/cards)
-[[ ${#cards[@]} -eq 1 ]] || die "expected exactly 1 USB sound card, found ${#cards[@]}: plug in the USB speakers (see /proc/asound/cards)"
-CARD=${cards[0]}
-echo "USB speakers: ALSA card '$CARD'"
 
 # ---------------------------------------------------------------- wi-fi
 step "Wi-Fi"
@@ -124,6 +112,13 @@ chmod 2775 "$MUSIC"
 printf '.*\n' > "$MUSIC/.mpdignore"
 chown "$OWNER":audio "$MUSIC/.mpdignore"
 
+step "Reserving ALSA card 0 for USB speakers"
+cat > /etc/modprobe.d/tplayer-audio.conf <<'EOF'
+# Any USB sound card becomes card 0, whenever it is plugged in; mpd plays to card 0.
+options snd slots=snd-usb-audio
+options snd-usb-audio index=0
+EOF
+
 step "Configuring mpd"
 [[ -f /etc/mpd.conf.orig ]] || cp /etc/mpd.conf /etc/mpd.conf.orig
 cat > /etc/mpd.conf <<EOF
@@ -142,7 +137,8 @@ filesystem_charset "UTF-8"
 audio_output {
     type   "alsa"
     name   "speakers"
-    device "plughw:CARD=$CARD,DEV=0"
+    # Card 0 is reserved for a USB sound card (see /etc/modprobe.d/tplayer-audio.conf).
+    device "plughw:0,0"
 }
 EOF
 systemctl enable mpd.service
@@ -173,7 +169,7 @@ mqtt:
   base_topic: zigbee2mqtt
   server: mqtt://localhost
 serial:
-  port: $DONGLE
+  # No port: zigbee2mqtt finds the Sonoff dongle by its USB ID when it is plugged in.
   adapter: ember
 advanced:
   channel: $ZIGBEE_CHANNEL
@@ -418,7 +414,7 @@ step "Status"
 systemctl --no-pager --lines=0 status mpd mosquitto zigbee2mqtt tplayer || true
 cat <<EOF
 
-Done. Next:
+Done. Plug in the Zigbee dongle and USB speakers if they are not in yet. Next:
   1. Copy music, one folder per playlist:
        rsync -av ~/kids-music/ $OWNER@$(hostname):$MUSIC/
      e.g. $MUSIC/1-nursery/..., $MUSIC/2-greek/...   (playlists rotate in name order)
@@ -426,3 +422,8 @@ Done. Next:
   3. Test:         top = play/pause (double press = next track), bottom = next playlist.
 Logs: journalctl -u zigbee2mqtt -u tplayer -u mpd -f
 EOF
+
+# The ALSA card-0 reservation only takes effect after a reboot. Do not reboot from
+# here: under cloud-init that can make the first-boot run repeat. flash-mac.sh's
+# user-data reboots once cloud-init has finished (power_state).
+echo "Reboot once to apply the audio setting (a flash-mac.sh card does this by itself)."

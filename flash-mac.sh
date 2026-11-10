@@ -47,6 +47,12 @@ ssh_pwauth: false
 
 runcmd:
   - [bash, -c, "OWNER=$PI_USER bash /boot/firmware/tplayer/setup.sh > /var/log/tplayer-setup.log 2>&1"]
+
+# Reboot once cloud-init has finished, so the audio setting applies.
+power_state:
+  mode: reboot
+  message: "simple-hifi player installed; rebooting"
+  condition: true
 EOF
 
   cat > "$dir/network-config" <<EOF
@@ -154,8 +160,8 @@ diskutil eject "/dev/$DISK"
 cat <<EOF
 
 Done. The card is ejected.
-  1. Put it in the Pi. Plug in the Zigbee dongle and the USB speakers BEFORE power-on.
-  2. Power on and leave it: first boot installs everything (expect 30-60 min on a Pi 3).
+  1. Put it in the Pi (dongle and speakers can go in now or later).
+  2. Power on and leave it: first boot installs everything and reboots once (expect 30-60 min on a Pi 3).
   3. Then:  ssh $PI_USER@$PI_HOST.local
             tail -f /var/log/tplayer-setup.log      (ends with "Done.")
             tplayer-pair
