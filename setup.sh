@@ -21,7 +21,8 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 step() { echo; echo "==> $*"; }
 
 [[ $EUID -eq 0 ]] || die "run with sudo: sudo $0"
-OWNER=${SUDO_USER:-}
+# OWNER can be passed in (flash-mac.sh's first-boot run has no SUDO_USER).
+OWNER=${OWNER:-${SUDO_USER:-}}
 [[ -n $OWNER && $OWNER != root ]] || die "run via sudo from your normal user, not as root"
 
 MUSIC=/srv/music
@@ -56,8 +57,10 @@ if [[ -f $WIFI_ENV ]]; then
   # shellcheck source=/dev/null
   source "$WIFI_ENV"
   echo "Using Wi-Fi settings from $WIFI_ENV (network: $WIFI_SSID)"
-else
+elif [[ -t 0 ]]; then
   read -rp "Wi-Fi network name (blank to skip): " WIFI_SSID
+else
+  echo "No terminal and no wifi.env: leaving Wi-Fi as it is (cloud-init sets it on a flash-mac.sh card)"
 fi
 if [[ -n $WIFI_SSID ]]; then
   if [[ -z $WIFI_PASS ]]; then read -rsp "Wi-Fi password: " WIFI_PASS; echo; fi
@@ -79,6 +82,13 @@ if [[ -n $WIFI_SSID ]]; then
 fi
 
 # ---------------------------------------------------------------- packages
+step "Waiting for the internet"
+for _ in $(seq 60); do
+  if curl -fsS -o /dev/null --max-time 10 https://deb.debian.org/; then online=1; break; fi
+  sleep 5
+done
+[[ ${online:-0} == 1 ]] || die "no internet after 5 minutes (check Wi-Fi / Ethernet)"
+
 step "Installing packages"
 apt-get update
 apt-get install -y mpd mpc mosquitto mosquitto-clients jq git curl ca-certificates make g++ gcc libsystemd-dev
