@@ -10,10 +10,11 @@
 # (that file holds the network key, so overwriting it would unpair the remote).
 #
 # What you get:
-#   /srv/music          drop music here over ssh (rsync); it plays in name order, looping
+#   /srv/music/<name>/  one folder per playlist; drop music in over ssh (rsync).
+#                       Each playlist plays in name order and loops; folders rotate in name order.
 #   tplayer-pair        opens pairing for 254 s; then press the RODRET's pair button 4 times
 #   RODRET top (I)      play / pause
-#   RODRET bottom (O)   next track (and starts playing if paused)
+#   RODRET bottom (O)   next playlist, from its first track, playing
 #   holds               ignored
 set -euo pipefail
 
@@ -210,12 +211,39 @@ EOF
 
 # ---------------------------------------------------------------- player scripts
 step "Installing player scripts"
-cat > /usr/local/bin/tplayer-sync <<'EOF'
+cat > /usr/local/bin/tplayer <<'EOF'
 #!/usr/bin/env bash
-# Keep mpd's queue equal to the music folder: add new files, drop removed ones.
-# Runs once at start, then again after every mpd database update.
+# simple-hifi player. Each folder directly under the music directory is a playlist.
+#   RODRET top (on)     play / pause
+#   RODRET bottom (off) next playlist, from its first track, playing
+#   holds               ignored
+# The queue always holds the current playlist's files in name order, looping.
+# shellcheck disable=SC2317  # functions run through with_lock
+# Files added to or removed from that folder join or leave the queue live.
 set -euo pipefail
 export LC_ALL=C
+
+STATE_DIR=${STATE_DIRECTORY:-/var/lib/tplayer}
+CURRENT=$STATE_DIR/current
+LOCK=$STATE_DIR/lock
+
+# One playlist change at a time (button loop and sync loop share the queue).
+with_lock() { { flock 9 && "$@"; } 9>"$LOCK"; }
+
+# Playlist names: the first path part of every song that sits in a folder.
+playlists() { mpc listall | sed -n 's|/.*||p' | sort -u; }
+
+# The saved playlist, or the first one if it is unset or gone.
+current_playlist() {
+  local all saved=""
+  all=$(playlists)
+  [[ -f $CURRENT ]] && saved=$(<"$CURRENT")
+  if [[ -n $saved ]] && grep -qxF -- "$saved" <<<"$all"; then
+    printf '%s\n' "$saved"
+  else
+    head -n 1 <<<"$all"
+  fi
+}
 
 sync_queue() {
   mpc -q repeat on
@@ -223,48 +251,72 @@ sync_queue() {
   mpc -q single off
   mpc -q consume off
 
-  local -A in_db=() in_queue=()
+  local cur f i
+  cur=$(current_playlist)
+  if [[ -z $cur ]]; then mpc -q clear; return 0; fi
+  printf '%s\n' "$cur" > "$CURRENT"
+
+  local -A want=() have=()
   local -a queue=()
-  local f i
   while IFS= read -r f; do
-    if [[ -n $f ]]; then in_db[$f]=1; fi
-  done < <(mpc listall)
+    if [[ -n $f ]]; then want[$f]=1; fi
+  done < <(mpc listall "$cur")
 
   mapfile -t queue < <(mpc -f '%file%' playlist)
   # Remove from the highest position down, so the positions stay valid.
   for (( i = ${#queue[@]} - 1; i >= 0; i-- )); do
     f=${queue[i]}
-    if [[ -z ${in_db[$f]+x} ]]; then
+    if [[ -z ${want[$f]+x} ]]; then
       mpc -q del $(( i + 1 ))
     else
-      in_queue[$f]=1
+      have[$f]=1
     fi
   done
 
   # New files go on the end, in name order.
   while IFS= read -r f; do
-    if [[ -n $f && -z ${in_queue[$f]+x} ]]; then
+    if [[ -n $f && -z ${have[$f]+x} ]]; then
       mpc -q add "$f"
     fi
-  done < <(mpc listall | sort)
+  done < <(mpc listall "$cur" | sort)
+}
+
+next_playlist() {
+  local all cur next
+  all=$(playlists)
+  [[ -n $all ]] || return 0
+  cur=$(current_playlist)
+  # The line after the current one, wrapping to the first.
+  next=$(awk -v cur="$cur" 'found { print; exit } $0 == cur { found = 1 }' <<<"$all")
+  [[ -n $next ]] || next=$(head -n 1 <<<"$all")
+  printf '%s\n' "$next" > "$CURRENT"
+  mpc -q clear
+  sync_queue
+  mpc -q play
+}
+
+buttons() {
+  local msg action
+  mosquitto_sub -h localhost -t 'zigbee2mqtt/+' | while IFS= read -r msg; do
+    if ! action=$(jq -r '.action // empty' <<<"$msg"); then continue; fi
+    case $action in
+      on)  mpc -q toggle ;;
+      off) with_lock next_playlist ;;
+    esac
+  done
+}
+
+watch_library() {
+  mpc idleloop database | while read -r _; do with_lock sync_queue; done
 }
 
 until mpc -q status; do sleep 2; done
-sync_queue
-mpc idleloop database | while read -r _; do sync_queue; done
-EOF
-
-cat > /usr/local/bin/tplayer-buttons <<'EOF'
-#!/usr/bin/env bash
-# RODRET top (on) = play/pause, bottom (off) = next. Holds (brightness_*) are ignored.
-set -euo pipefail
-mosquitto_sub -h localhost -t 'zigbee2mqtt/+' | while IFS= read -r msg; do
-  if ! action=$(jq -r '.action // empty' <<<"$msg"); then continue; fi
-  case $action in
-    on)  mpc -q toggle ;;
-    off) mpc -q next; mpc -q play ;;
-  esac
-done
+with_lock sync_queue
+watch_library &
+buttons &
+# If either loop ends, exit so systemd restarts the whole player.
+wait -n
+exit 1
 EOF
 
 cat > /usr/local/bin/tplayer-pair <<'EOF'
@@ -278,37 +330,38 @@ echo "Pairing open for 254 s. Take the back cover off the RODRET and press the p
 echo "Wait for 'interview_successful', then press Ctrl-C. Test: top button should print an action."
 mosquitto_sub -h localhost -v -W 254 -t zigbee2mqtt/bridge/event -t 'zigbee2mqtt/+' || true
 EOF
-chmod 755 /usr/local/bin/tplayer-sync /usr/local/bin/tplayer-buttons /usr/local/bin/tplayer-pair
+chmod 755 /usr/local/bin/tplayer /usr/local/bin/tplayer-pair
 
-for svc in sync buttons; do
-  cat > /etc/systemd/system/tplayer-$svc.service <<EOF
+cat > /etc/systemd/system/tplayer.service <<'EOF'
 [Unit]
-Description=simple-hifi player: $svc
+Description=simple-hifi player (RODRET buttons + playlist folders)
 After=mpd.service mosquitto.service
 Wants=mpd.service mosquitto.service
 
 [Service]
 DynamicUser=yes
-ExecStart=/usr/local/bin/tplayer-$svc
+StateDirectory=tplayer
+ExecStart=/usr/local/bin/tplayer
 Restart=always
 RestartSec=3
 
 [Install]
 WantedBy=multi-user.target
 EOF
-done
 
 systemctl daemon-reload
-systemctl enable --now zigbee2mqtt.service tplayer-sync.service tplayer-buttons.service
+systemctl enable --now zigbee2mqtt.service tplayer.service
 
 # ---------------------------------------------------------------- done
 step "Status"
-systemctl --no-pager --lines=0 status mpd mosquitto zigbee2mqtt tplayer-sync tplayer-buttons || true
+systemctl --no-pager --lines=0 status mpd mosquitto zigbee2mqtt tplayer || true
 cat <<EOF
 
 Done. Next:
-  1. Copy music:   rsync -av ~/kids-music/ $OWNER@$(hostname):$MUSIC/
+  1. Copy music, one folder per playlist:
+       rsync -av ~/kids-music/ $OWNER@$(hostname):$MUSIC/
+     e.g. $MUSIC/1-nursery/..., $MUSIC/2-greek/...   (playlists rotate in name order)
   2. Pair remote:  tplayer-pair
-  3. Test:         press the RODRET top button.
-Logs: journalctl -u zigbee2mqtt -u tplayer-buttons -u tplayer-sync -u mpd -f
+  3. Test:         top button = play/pause, bottom button = next playlist.
+Logs: journalctl -u zigbee2mqtt -u tplayer -u mpd -f
 EOF
