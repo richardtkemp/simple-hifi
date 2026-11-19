@@ -6,7 +6,7 @@
 #   ./flash-mac.sh            list external disks
 #   ./flash-mac.sh disk4      flash /dev/disk4 (asks you to type the disk name to confirm)
 #
-# Needs, next to this script: setup.sh and wifi.env (WIFI_SSID=..., WIFI_PASS=...).
+# Needs, next to this script: setup.sh, web/ and wifi.env (WIFI_SSID=..., WIFI_PASS=...).
 # Optional: extra-keys.pub, more ssh public keys (one per line) that may log in.
 # Optional env: PI_USER (default: your Mac username), PI_HOST (default: simple-hifi).
 #               PI_KEY: the public key file to use (default: the first of ~/.ssh/id_ed25519.pub,
@@ -84,12 +84,15 @@ network:
       optional: true
 EOF
 
-  mkdir -p "$dir/tplayer"
+  mkdir -p "$dir/tplayer/web/static"
   cp "$HERE/setup.sh" "$dir/tplayer/setup.sh"
+  cp "$HERE/web/tplayer_web.py" "$dir/tplayer/web/"
+  cp "$HERE"/web/static/* "$dir/tplayer/web/static/"
 }
 
 # ---------------------------------------------------------------- inputs
 [[ -f $HERE/setup.sh ]] || die "setup.sh not found next to this script"
+[[ -f $HERE/web/tplayer_web.py ]] || die "web/ not found next to this script"
 [[ -f $HERE/wifi.env ]] || die "wifi.env not found next to this script"
 WIFI_SSID="" WIFI_PASS=""
 # shellcheck source=/dev/null

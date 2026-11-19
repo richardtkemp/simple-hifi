@@ -16,6 +16,8 @@
 #   RODRET top (I)      play / pause; double press = next track
 #   RODRET bottom (O)   next playlist, resuming where it was left, playing
 #   holds               ignored
+#   http://<pi>:8090/   web page: paste YouTube links (or share them from the YouTube app)
+#                       and pick an album; the Pi downloads the audio into it (web/)
 set -euo pipefail
 
 die() { echo "ERROR: $*" >&2; exit 1; }
@@ -33,16 +35,24 @@ Z2M_VERSION=2.14.3
 Z2M_DATA=/var/lib/zigbee2mqtt
 ZIGBEE_CHANNEL=25   # 15, 20 and 25 sit between the common Wi-Fi channels 1, 6 and 11
 WIFI_COUNTRY=GB
+WEB_PORT=8090
+WEB_LIB=/usr/local/lib/tplayer-web
+YTDLP=/usr/local/bin/yt-dlp
+# Cloudflare Tunnel token for music.example.com. A secret: put it there by hand
+# (root, mode 600); never in this repo. No file = no tunnel, and that step is skipped.
+CF_TOKEN=/etc/cloudflared/tplayer.token
+HERE=$(dirname "$(readlink -f "$0")")
 
 # ---------------------------------------------------------------- preflight
 step "Checking the OS"
 [[ $(uname -m) == aarch64 ]] || die "this is $(uname -m); flash the 64-bit Pi OS Lite (zigbee2mqtt is dropping 32-bit)"
+[[ -f $HERE/web/tplayer_web.py ]] || die "web/ is missing next to setup.sh (copy the whole simple-hifi folder)"
 
 # ---------------------------------------------------------------- wi-fi
 step "Wi-Fi"
 # wifi.env next to this script (WIFI_SSID=..., WIFI_PASS=...) skips the prompts.
 # It is git-ignored: keep the password out of any repo.
-WIFI_ENV="$(dirname "$(readlink -f "$0")")/wifi.env"
+WIFI_ENV="$HERE/wifi.env"
 WIFI_SSID="" WIFI_PASS=""
 if [[ -f $WIFI_ENV ]]; then
   # shellcheck source=/dev/null
@@ -82,7 +92,8 @@ done
 
 step "Installing packages"
 apt-get update
-apt-get install -y mpd mpc mosquitto mosquitto-clients jq curl ca-certificates
+# python3 + ffmpeg: the web page and yt-dlp (yt-dlp itself comes from upstream below).
+apt-get install -y mpd mpc mosquitto mosquitto-clients jq curl ca-certificates python3 ffmpeg
 
 node_major=$(node --version 2>/dev/null | sed -n 's/^v\([0-9]*\).*/\1/p' || true)
 if [[ $node_major != 22 && $node_major != 24 ]]; then
@@ -405,12 +416,111 @@ RestartSec=3
 WantedBy=multi-user.target
 EOF
 
+# ---------------------------------------------------------------- web page for adding music
+step "yt-dlp (official build, updated daily)"
+# Debian's yt-dlp falls behind YouTube within weeks. The official zipapp runs on the
+# system python, bundles the YouTube challenge scripts (yt-dlp-ejs), and updates itself.
+# Its JavaScript runtime is the Node.js installed above (tplayer-web passes --js-runtimes node).
+if [[ -x $YTDLP ]]; then
+  "$YTDLP" -U || echo "yt-dlp update failed; keeping the installed $("$YTDLP" --version)"
+else
+  curl -fsSL -o "$YTDLP.part" https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp
+  chmod 755 "$YTDLP.part"
+  mv "$YTDLP.part" "$YTDLP"
+fi
+echo "yt-dlp $("$YTDLP" --version)"
+
+cat > /etc/systemd/system/tplayer-ytdlp-update.service <<EOF
+[Unit]
+Description=Update yt-dlp (YouTube changes often)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=$YTDLP -U
+EOF
+
+cat > /etc/systemd/system/tplayer-ytdlp-update.timer <<'EOF'
+[Unit]
+Description=Update yt-dlp daily
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+step "Web page for adding YouTube music (port $WEB_PORT)"
+install -d -m 755 "$WEB_LIB" "$WEB_LIB/static"
+install -m 644 "$HERE/web/tplayer_web.py" "$WEB_LIB/"
+install -m 644 "$HERE"/web/static/* "$WEB_LIB/static/"
+
+cat > /etc/systemd/system/tplayer-web.service <<EOF
+[Unit]
+Description=simple-hifi player web page (add YouTube music to an album)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Runs as the music folder's owner, so new files are owned like hand-copied ones.
+User=$OWNER
+Group=audio
+UMask=0002
+StateDirectory=tplayer-web
+Environment=TPLAYER_MUSIC=$MUSIC
+Environment=TPLAYER_PORT=$WEB_PORT
+Environment=TPLAYER_YTDLP=$YTDLP
+ExecStart=/usr/bin/python3 $WEB_LIB/tplayer_web.py
+Nice=10
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# ---------------------------------------------------------------- public URL (Cloudflare Tunnel)
+# The tunnel runs on the Pi, so no static IP is needed. Cloudflare Access (login) and the
+# tunnel's route to http://localhost:$WEB_PORT are set up in Cloudflare, not here.
+if [[ -f $CF_TOKEN ]]; then
+  step "Cloudflare Tunnel (cloudflared)"
+  if ! command -v cloudflared >/dev/null; then
+    curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg -o /usr/share/keyrings/cloudflare-main.gpg
+    echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main" \
+      > /etc/apt/sources.list.d/cloudflared.list
+    apt-get update
+    apt-get install -y cloudflared
+  fi
+  cat > /etc/systemd/system/cloudflared-tplayer.service <<EOF
+[Unit]
+Description=Cloudflare Tunnel for music.example.com
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/cloudflared --no-autoupdate tunnel run --token-file $CF_TOKEN
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+fi
+
 systemctl daemon-reload
-systemctl enable --now zigbee2mqtt.service tplayer.service
+systemctl enable --now zigbee2mqtt.service tplayer.service tplayer-ytdlp-update.timer
+if [[ -f $CF_TOKEN ]]; then systemctl enable --now cloudflared-tplayer.service; fi
+systemctl enable tplayer-web.service
+systemctl restart tplayer-web.service   # picks up a new tplayer_web.py on a re-run
 
 # ---------------------------------------------------------------- done
 step "Status"
-systemctl --no-pager --lines=0 status mpd mosquitto zigbee2mqtt tplayer || true
+systemctl --no-pager --lines=0 status mpd mosquitto zigbee2mqtt tplayer tplayer-web || true
+if [[ -f $CF_TOKEN ]]; then systemctl --no-pager --lines=0 status cloudflared-tplayer || true; fi
 cat <<EOF
 
 Done. Plug in the Zigbee dongle and USB speakers if they are not in yet. Next:
@@ -419,7 +529,8 @@ Done. Plug in the Zigbee dongle and USB speakers if they are not in yet. Next:
      e.g. $MUSIC/1-nursery/..., $MUSIC/2-greek/...   (playlists rotate in name order)
   2. Pair remote:  tplayer-pair
   3. Test:         top = play/pause (double press = next track), bottom = next playlist.
-Logs: journalctl -u zigbee2mqtt -u tplayer -u mpd -f
+  4. Add YouTube music from a phone or browser:  http://$(hostname).local:$WEB_PORT/
+Logs: journalctl -u zigbee2mqtt -u tplayer -u tplayer-web -u mpd -f
 EOF
 
 # The ALSA card-0 reservation only takes effect after a reboot. Do not reboot from
