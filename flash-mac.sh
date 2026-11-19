@@ -9,6 +9,8 @@
 # Needs, next to this script: setup.sh and wifi.env (WIFI_SSID=..., WIFI_PASS=...).
 # Optional: extra-keys.pub, more ssh public keys (one per line) that may log in.
 # Optional env: PI_USER (default: your Mac username), PI_HOST (default: simple-hifi).
+#               PI_KEY: the public key file to use (default: the first of ~/.ssh/id_ed25519.pub,
+#               id_ecdsa.pub, id_rsa.pub).
 #
 # Written for macOS's bash 3.2: no mapfile, no associative arrays.
 set -euo pipefail
@@ -95,7 +97,11 @@ source "$HERE/wifi.env"
 [[ -n $WIFI_SSID && -n $WIFI_PASS ]] || die "wifi.env must set WIFI_SSID and WIFI_PASS"
 
 PUBKEY=""
-for k in id_ed25519.pub id_ecdsa.pub id_rsa.pub; do
+if [[ -n ${PI_KEY:-} ]]; then
+  [[ -f $PI_KEY ]] || die "PI_KEY: no such file: $PI_KEY"
+  PUBKEY=$(cat "$PI_KEY")
+fi
+[[ -n $PUBKEY ]] || for k in id_ed25519.pub id_ecdsa.pub id_rsa.pub; do
   if [[ -f $HOME/.ssh/$k ]]; then PUBKEY=$(cat "$HOME/.ssh/$k"); break; fi
 done
 [[ -n $PUBKEY ]] || die "no ssh public key in ~/.ssh (id_ed25519.pub / id_ecdsa.pub / id_rsa.pub)"
