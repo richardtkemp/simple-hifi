@@ -7,6 +7,7 @@
 #   ./flash-mac.sh disk4      flash /dev/disk4 (asks you to type the disk name to confirm)
 #
 # Needs, next to this script: setup.sh and wifi.env (WIFI_SSID=..., WIFI_PASS=...).
+# Optional: extra-keys.pub, more ssh public keys (one per line) that may log in.
 # Optional env: PI_USER (default: your Mac username), PI_HOST (default: simple-hifi).
 #
 # Written for macOS's bash 3.2: no mapfile, no associative arrays.
@@ -24,6 +25,18 @@ step() { echo; echo "==> $*"; }
 # YAML double-quoted string.
 yq() { local s=${1//\\/\\\\}; s=${s//\"/\\\"}; printf '"%s"' "$s"; }
 
+# The authorized_keys entries for user-data: your Mac key, plus each line of
+# extra-keys.pub next to this script (optional; blank lines and # comments skipped).
+key_lines() {
+  echo "      - $(yq "$PUBKEY")"
+  [[ -f $HERE/extra-keys.pub ]] || return 0
+  local line
+  while IFS= read -r line || [[ -n $line ]]; do
+    [[ -z $line || $line == \#* ]] && continue
+    echo "      - $(yq "$line")"
+  done < "$HERE/extra-keys.pub"
+}
+
 # Write the cloud-init files and setup.sh into a mounted boot partition.
 write_bootfs() {
   local dir=$1
@@ -39,7 +52,7 @@ users:
     shell: /bin/bash
     lock_passwd: true
     ssh_authorized_keys:
-      - $(yq "$PUBKEY")
+$(key_lines)
     sudo: ALL=(ALL) NOPASSWD:ALL
 
 enable_ssh: true
