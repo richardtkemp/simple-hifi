@@ -513,9 +513,9 @@ STATIC_FILES = {
     "/sw.js": ("sw.js", "text/javascript; charset=utf-8"),
     "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"),
     # Drawn by make_icons.py. A new design gets a new name: Chrome and Cloudflare cache icons.
-    "/icon-2-192.png": ("icon-2-192.png", "image/png"),
-    "/icon-2-512.png": ("icon-2-512.png", "image/png"),
-    "/icon-2-maskable-512.png": ("icon-2-maskable-512.png", "image/png"),
+    "/icon-3-192.png": ("icon-3-192.png", "image/png"),
+    "/icon-3-512.png": ("icon-3-512.png", "image/png"),
+    "/icon-3-maskable-512.png": ("icon-3-maskable-512.png", "image/png"),
 }
 
 
