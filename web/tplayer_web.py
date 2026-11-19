@@ -473,7 +473,7 @@ def make_handler(jobs, icons):
         def log_message(self, fmt, *args):
             sys.stderr.write("tplayer-web: %s %s\n" % (self.address_string(), fmt % args))
 
-        def _send(self, code, body, ctype, cache="no-cache"):
+        def _send(self, code, body, ctype, cache="no-store"):
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
