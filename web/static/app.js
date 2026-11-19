@@ -37,25 +37,161 @@ async function api(path, body) {
   return data;
 }
 
-// ---- album picker
+// ---- album picker (tiles)
 
-async function loadAlbums(select) {
-  const { albums } = await api("/api/albums");
-  const sel = $("album");
-  sel.textContent = "";
-  for (const a of albums) sel.append(new Option(a, a));
-  sel.append(new Option("➕ New album…", NEW));
-  const want = select || localStorage.getItem("album");
-  sel.value = albums.includes(want) ? want : (albums.length ? albums[albums.length - 1] : NEW);
-  albumChanged();
+let albums = [], songs = {}, chosen = null;   // chosen: an album name, or NEW
+
+// "1-nursery-rhymes" -> "Nursery rhymes" (display only; the folder keeps its name)
+function pretty(name) {
+  const s = name.replace(/^\d+[-_. ]+/, "").replace(/[-_]+/g, " ").trim() || name;
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-function albumChanged() {
-  const isNew = $("album").value === NEW;
+// A soft colour per album, the same every time.
+function tint(name) {
+  let h = 0;
+  for (const ch of name) h = (h * 31 + ch.codePointAt(0)) % 360;
+  return `hsl(${(h * 7) % 360} 62% 92%)`;
+}
+
+function renderAlbums() {
+  const box = $("albums");
+  box.textContent = "";
+  for (const a of albums) {
+    const b = el("button", "album");
+    b.type = "button";
+    b.style.setProperty("--tint", tint(a));
+    b.append(el("span", "n", pretty(a)));
+    const n = songs[a];
+    if (n != null) b.append(el("span", "c", n === 1 ? "1 song" : n + " songs"));
+    b.setAttribute("aria-pressed", String(chosen === a));
+    b.addEventListener("click", () => choose(a));
+    box.append(b);
+  }
+  const nb = el("button", "album new");
+  nb.type = "button";
+  nb.append(el("span", "n", "+ New album"));
+  nb.setAttribute("aria-pressed", String(chosen === NEW));
+  nb.addEventListener("click", () => choose(NEW));
+  box.append(nb);
+}
+
+function choose(a) {
+  chosen = a;
+  renderAlbums();
+  const isNew = a === NEW;
   $("newname").hidden = !isNew;
   if (isNew) $("newname").focus();
+  updateAdd();
+  loadSongs();
 }
-$("album").addEventListener("change", albumChanged);
+
+// ---- songs already in the chosen album, with delete
+
+let songsFor = null;
+
+async function loadSongs() {
+  const box = $("songs");
+  if (!chosen || chosen === NEW) { box.hidden = true; songsFor = null; return; }
+  const album = chosen;
+  let list;
+  try {
+    list = (await api("/api/songs?album=" + encodeURIComponent(album))).songs;
+  } catch (e) {
+    return;   // the album list refresh will catch up
+  }
+  if (album !== chosen) return;           // she picked another album meanwhile
+  // Leave the list alone while a delete is waiting for its second tap.
+  if (songsFor === album && box.querySelector(".del.sure")) return;
+  songsFor = album;
+  if (songs[album] !== list.length) { songs[album] = list.length; renderAlbums(); }
+  box.textContent = "";
+  box.hidden = false;
+  const head = el("div", "head");
+  head.append(el("b", null, "In this album"), el("span", null, list.length === 1 ? "1 song" : list.length + " songs"));
+  box.append(head);
+  const ol = el("ol");
+  for (const s of list) {
+    const li = el("li");
+    li.append(el("span", "nm", s.title));
+    const del = el("button", "del", "✕");
+    del.type = "button";
+    del.title = "Delete " + s.title;
+    del.setAttribute("aria-label", "Delete " + s.title);
+    let timer = null;
+    del.addEventListener("click", async () => {
+      if (!del.classList.contains("sure")) {      // first tap asks, second tap deletes
+        del.classList.add("sure");
+        del.textContent = "Delete";
+        timer = setTimeout(() => { del.classList.remove("sure"); del.textContent = "✕"; }, 3000);
+        return;
+      }
+      clearTimeout(timer);
+      del.disabled = true;
+      try {
+        const r = await api("/api/delete", { album, file: s.file });
+        if (r.album_deleted) {
+          showMsg("Deleted “" + s.title + "”. That was the last song, so the album “" + pretty(album) + "” is gone too.", true);
+          chosen = null;
+          await loadAlbums();
+        } else {
+          li.remove();
+          songsFor = null;
+          await loadSongs();
+        }
+      } catch (e) {
+        showMsg(e.message);
+        del.disabled = false;
+      }
+    });
+    li.append(del);
+    ol.append(li);
+  }
+  box.append(ol);
+  if (!list.length) box.append(el("p", "note", "No songs yet."));
+  else box.append(el("p", "note", "New songs play after these."));
+}
+
+function updateAdd() {
+  const btn = $("add");
+  btn.textContent = "";
+  if (chosen === NEW) {
+    const n = $("newname").value.trim();
+    btn.append(n ? "Add to " : "Add to new album");
+    if (n) btn.append(el("span", "to", n));
+  } else if (chosen) {
+    btn.append("Add to ", el("span", "to", pretty(chosen)));
+  } else {
+    btn.append("Add");
+  }
+}
+$("newname").addEventListener("input", updateAdd);
+
+async function loadAlbums(select) {
+  const data = await api("/api/albums");
+  albums = data.albums || [];
+  songs = data.songs || {};
+  const want = select || chosen || localStorage.getItem("album");
+  chosen = albums.includes(want) ? want : (albums.length ? albums[albums.length - 1] : NEW);
+  choose(chosen);
+}
+
+// ---- paste button (Chrome asks once for clipboard access)
+
+if (navigator.clipboard && navigator.clipboard.readText) {
+  $("paste").hidden = false;
+  $("paste").addEventListener("click", async () => {
+    try {
+      const t = (await navigator.clipboard.readText()).trim();
+      if (!t) return showMsg("The clipboard is empty. Copy a YouTube link first.");
+      const cur = $("links").value.trim();
+      $("links").value = cur ? cur + "\n" + t : t;
+      showMsg("");
+    } catch (e) {
+      showMsg("Couldn't read the clipboard. Press and hold in the box and choose Paste.");
+    }
+  });
+}
 
 // ---- shared from another app (Android share sheet opens /share?text=...)
 
@@ -73,9 +209,10 @@ function takeShared() {
 // ---- add
 
 $("add").addEventListener("click", async () => {
-  const isNew = $("album").value === NEW;
-  const album = isNew ? $("newname").value.trim() : $("album").value;
+  const isNew = chosen === NEW;
+  const album = isNew ? $("newname").value.trim() : chosen;
   if (!$("links").value.trim()) return showMsg("Paste a YouTube link first.");
+  if (!chosen) return showMsg("Pick an album first.");
   if (isNew && !album) return showMsg("Type a name for the new album.");
   $("add").disabled = true;
   showMsg("");
@@ -86,7 +223,7 @@ $("add").addEventListener("click", async () => {
     $("newname").value = "";
     $("shared").hidden = true;
     const n = r.added === 1 ? "1 link" : r.added + " links";
-    showMsg("Added " + n + " to “" + r.album + "”. You can close this page; the player keeps going."
+    showMsg("Added " + n + " to “" + pretty(r.album) + "”. You can close this page; the player keeps going."
       + (r.note ? "\n" + r.note : ""), true);
     await loadAlbums(r.album);
     refresh();
@@ -94,6 +231,7 @@ $("add").addEventListener("click", async () => {
     showMsg(e.message);
   } finally {
     $("add").disabled = false;
+    updateAdd();
   }
 });
 
@@ -111,7 +249,7 @@ function statusText(job) {
       const pct = cur && cur.percent != null ? " — " + cur.percent + "%" : "";
       return items.length > 1 ? "Downloading " + pos + " of " + items.length + pct : "Downloading" + pct;
     }
-    case "done": return "✓ Added " + (done === 1 ? "1 song" : done + " songs") + " to “" + job.album + "”";
+    case "done": return "Added " + (done === 1 ? "1 song" : done + " songs") + " to “" + pretty(job.album) + "”";
     case "failed": return (done ? "Added " + done + ". " : "") + (job.error || "It didn't work.");
   }
   return job.status;
@@ -125,25 +263,38 @@ function percent(job) {
   return Math.round(sum / items.length);
 }
 
+function videoId(job) {
+  const items = job.items || [];
+  if (items.length && items[0].id) return items[0].id;
+  const m = /(?:v=|youtu\.be\/|shorts\/)([\w-]{11})/.exec(job.url || "");
+  return m ? m[1] : null;
+}
+
 function renderJob(job) {
   const box = el("div", "job " + job.status);
-  box.append(el("div", "t", job.title || job.url));
-  box.append(el("div", "s", statusText(job)));
+  const th = el("div", "thumb");
+  const vid = videoId(job);
+  if (vid) th.style.backgroundImage = `url("https://i.ytimg.com/vi/${vid}/mqdefault.jpg")`;
+  box.append(th);
+  const body = el("div");
+  box.append(body);
+  body.append(el("div", "t", job.title || job.url));
+  body.append(el("div", "s", statusText(job)));
   if (job.status === "downloading" || job.status === "listing") {
-    const bar = el("div", "bar");
+    const bar = el("div", "prog");
     const fill = el("div");
     fill.style.width = percent(job) + "%";
     bar.append(fill);
-    box.append(bar);
+    body.append(bar);
   }
   if (job.status === "failed") {
-    const b = el("button", "small", "Try again");
+    const b = el("button", "retry", "Try again");
     b.addEventListener("click", async () => {
       b.disabled = true;
       try { await api("/api/jobs/" + job.id + "/retry", {}); } catch (e) { showMsg(e.message); }
       refresh();
     });
-    box.append(b);
+    body.append(b);
   }
   const items = job.items || [];
   if (items.length > 1 || job.detail || items.some((i) => i.detail)) {
@@ -157,7 +308,7 @@ function renderJob(job) {
     }
     if (items.length) d.append(ol);
     if (job.detail) d.append(el("div", "tech", job.detail));
-    box.append(d);
+    body.append(d);
   }
   return box;
 }
@@ -171,7 +322,7 @@ async function refresh() {
     // Keep any open "Songs" lists open across refreshes.
     const open = new Set([...list.querySelectorAll("details[open]")].map((d) => d.dataset.id));
     list.textContent = "";
-    if (!jobs.length) list.append(el("div", "hint", "Nothing yet."));
+    if (!jobs.length) list.append(el("p", "empty", "Nothing yet. Songs you add show up here."));
     for (const j of jobs) {
       const node = renderJob(j);
       const d = node.querySelector("details");
@@ -182,6 +333,7 @@ async function refresh() {
   } catch (e) {
     busy = true;   // keep trying
   }
+  loadSongs();
   pollTimer = setTimeout(refresh, busy ? 3000 : 20000);
 }
 

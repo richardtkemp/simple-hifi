@@ -2,66 +2,175 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="theme-color" content="#f28c28">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#23264a">
 <title>Music</title>
 <!-- use-credentials: behind Cloudflare Access the manifest fetch needs the Access cookie (MDN, link rel=manifest) -->
 <link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">
 <link rel="icon" href="/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&display=swap">
 <style>
-  :root { --o: #f28c28; --bg: #fff8f0; --ink: #2b2118; --muted: #7a6a5c; --bad: #c0392b; --good: #2e8b57; }
+  :root {
+    --night: #23264a; --night-2: #343a6e; --paper: #f7f5fb; --card: #ffffff;
+    --lilac: #7d6bd6; --lilac-dk: #6553c4; --moon: #f4c95d; --mist: #e6e2f3;
+    --ink: #23264a; --muted: #6f6c8a; --rose: #d4566a; --leaf: #3f9a6e;
+    --display: "Bricolage Grotesque", system-ui, sans-serif;
+    --body: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --r: 18px;
+  }
   * { box-sizing: border-box; }
-  body { margin: 0; font: 17px/1.4 system-ui, sans-serif; background: var(--bg); color: var(--ink); }
-  main { max-width: 560px; margin: 0 auto; padding: 16px; }
-  h1 { font-size: 1.4em; margin: 0.2em 0 0.6em; }
-  h2 { font-size: 1.1em; margin: 1.4em 0 0.5em; }
-  label { display: block; font-weight: 600; margin: 0.9em 0 0.3em; }
-  textarea, select, input[type=text] { width: 100%; font: inherit; padding: 10px; border: 1px solid #d8c8b8;
-    border-radius: 10px; background: #fff; color: inherit; }
-  textarea { min-height: 6.5em; }
-  button { font: inherit; border: 0; border-radius: 10px; padding: 12px 18px; background: var(--o); color: #fff;
-    font-weight: 600; }
-  button:disabled { opacity: 0.5; }
-  button.small { padding: 6px 12px; font-size: 0.9em; }
-  #add { width: 100%; margin-top: 1em; }
-  .hint { color: var(--muted); font-size: 0.9em; }
-  .banner { background: #fff; border-left: 4px solid var(--o); padding: 10px 12px; border-radius: 6px; margin-bottom: 0.5em; }
-  .msg { margin-top: 0.8em; padding: 10px 12px; border-radius: 8px; }
-  .msg.bad { background: #fde8e6; color: var(--bad); }
-  .msg.good { background: #e6f4ec; color: var(--good); }
-  .job { background: #fff; border-radius: 10px; padding: 10px 12px; margin: 8px 0; box-shadow: 0 1px 2px #0001; }
-  .job .t { font-weight: 600; overflow-wrap: anywhere; }
-  .job .s { margin-top: 2px; }
-  .job.done .s { color: var(--good); }
-  .job.failed .s { color: var(--bad); }
-  .bar { height: 6px; background: #f1e4d6; border-radius: 3px; margin-top: 6px; overflow: hidden; }
-  .bar > div { height: 100%; background: var(--o); width: 0; transition: width 0.5s; }
-  details { margin-top: 6px; font-size: 0.9em; }
-  details li.failed { color: var(--bad); }
-  details li.done { color: var(--good); }
-  .tech { color: var(--muted); font-size: 0.8em; white-space: pre-wrap; overflow-wrap: anywhere; }
+  html { -webkit-tap-highlight-color: transparent; }
+  body { margin: 0; font: 16px/1.45 var(--body); background: var(--paper); color: var(--ink); }
+  button, input, textarea { font: inherit; color: inherit; }
+  :focus-visible { outline: 3px solid var(--moon); outline-offset: 2px; }
+
+  /* ---- night-sky header: the one decorative thing on the page */
+  header {
+    position: relative; overflow: hidden; color: #fff;
+    background:
+      radial-gradient(1.5px 1.5px at 12% 30%, #fff9 50%, transparent 51%),
+      radial-gradient(1px 1px at 28% 70%, #fff8 50%, transparent 51%),
+      radial-gradient(2px 2px at 46% 22%, #fffa 50%, transparent 51%),
+      radial-gradient(1px 1px at 63% 58%, #fff7 50%, transparent 51%),
+      radial-gradient(1.5px 1.5px at 74% 18%, #fff9 50%, transparent 51%),
+      linear-gradient(165deg, var(--night) 0%, var(--night-2) 100%);
+    padding: calc(28px + env(safe-area-inset-top)) 22px 64px;
+  }
+  header::after {          /* crescent moon */
+    content: ""; position: absolute; right: 26px; top: calc(22px + env(safe-area-inset-top));
+    width: 54px; height: 54px; border-radius: 50%;
+    box-shadow: -12px 8px 0 0 var(--moon); transform: rotate(-12deg);
+  }
+  header h1 { font: 700 32px/1.05 var(--display); letter-spacing: -0.02em; margin: 0; max-width: 78%; }
+  header p { margin: 8px 0 0; color: #d9d6f2; font-size: 15px; }
+
+  main { max-width: 560px; margin: -44px auto 0; padding: 0 14px 120px; position: relative; }
+  .card { background: var(--card); border-radius: var(--r); padding: 18px; box-shadow: 0 6px 24px #23264a14, 0 1px 2px #23264a10; }
+  .card + .card, .card + h2 { margin-top: 14px; }
+  .label { font: 500 13px/1 var(--display); letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); margin: 0 0 10px; }
+
+  .shared { display: flex; gap: 10px; align-items: center; background: #fdf6e3; border-radius: 12px;
+    padding: 10px 12px; margin: 0 0 12px; font-size: 15px; }
+  .shared::before { content: "🌙"; }
+
+  .linkbox { position: relative; }
+  textarea { width: 100%; min-height: 92px; resize: vertical; border: 1.5px solid var(--mist); border-radius: 14px;
+    padding: 12px 14px; background: #fbfaff; font-size: 15px; transition: border-color .2s; }
+  textarea:focus { border-color: var(--lilac); outline: none; background: #fff; }
+  textarea::placeholder { color: #a7a3c0; }
+  .paste { position: absolute; right: 8px; bottom: 10px; border: 0; border-radius: 999px; padding: 6px 12px;
+    background: var(--mist); color: var(--lilac-dk); font-weight: 600; font-size: 14px; }
+  .hint { color: var(--muted); font-size: 13.5px; margin: 8px 2px 0; }
+
+  /* ---- album tiles */
+  .albums { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
+  .album { position: relative; text-align: left; border: 2px solid transparent; border-radius: 16px; padding: 12px 12px 11px;
+    background: var(--tint, #f1eefb); min-height: 76px; display: flex; flex-direction: column; justify-content: space-between;
+    transition: transform .12s, border-color .15s, box-shadow .15s; cursor: pointer; }
+  .album:active { transform: scale(.97); }
+  .album .n { font: 700 16px/1.15 var(--display); letter-spacing: -0.01em; overflow-wrap: anywhere; }
+  .album .c { font-size: 12.5px; color: #23264a99; margin-top: 6px; }
+  .album[aria-pressed="true"] { border-color: var(--night); box-shadow: 0 4px 14px #23264a22; }
+  .album[aria-pressed="true"]::after { content: "✓"; position: absolute; top: 8px; right: 10px; width: 22px; height: 22px;
+    border-radius: 50%; background: var(--night); color: var(--moon); font: 700 13px/22px var(--body); text-align: center; }
+  .album.new { background: transparent; border: 2px dashed #c9c3e6; color: var(--lilac-dk); }
+  .album.new[aria-pressed="true"] { border-style: solid; border-color: var(--lilac); }
+  #newname { width: 100%; margin-top: 10px; border: 1.5px solid var(--lilac); border-radius: 12px; padding: 11px 14px; font-size: 16px; }
+  #newname:focus { outline: none; box-shadow: 0 0 0 3px #7d6bd633; }
+
+
+  /* ---- songs already in the chosen album */
+  .songs { margin-top: 16px; border-top: 1px solid var(--mist); padding-top: 12px; }
+  .songs .head { display: flex; justify-content: space-between; align-items: baseline; margin: 0 2px 6px; }
+  .songs .head b { font: 700 15px/1.2 var(--display); }
+  .songs .head span { font-size: 13px; color: var(--muted); }
+  .songs ol { list-style: none; margin: 0; padding: 0; counter-reset: s; max-height: 340px; overflow-y: auto; }
+  .songs li { counter-increment: s; display: grid; grid-template-columns: 26px 1fr auto; align-items: center; gap: 6px;
+    padding: 7px 2px; border-bottom: 1px solid #f0edf8; font-size: 14.5px; }
+  .songs li:last-child { border-bottom: 0; }
+  .songs li::before { content: counter(s); color: #aaa6c4; font: 500 12.5px/1 var(--display); text-align: right; padding-right: 4px; }
+  .songs li .nm { overflow-wrap: anywhere; line-height: 1.3; }
+  .songs .del { border: 0; background: transparent; color: #b2adc9; width: 36px; height: 32px; border-radius: 999px; font-size: 15px; }
+  .songs .del:hover { color: var(--rose); }
+  .songs .del.sure { width: auto; padding: 0 12px; background: var(--rose); color: #fff; font-weight: 600; font-size: 13px; }
+  .songs .note { font-size: 13px; color: var(--muted); margin: 8px 2px 0; }
+
+  /* ---- add button, pinned to the bottom of the screen */
+  .bar-bottom { position: fixed; left: 0; right: 0; bottom: 0; padding: 12px 14px calc(12px + env(safe-area-inset-bottom));
+    background: linear-gradient(to top, var(--paper) 70%, #f7f5fb00); }
+  #add { display: block; width: 100%; max-width: 532px; margin: 0 auto; border: 0; border-radius: 999px; padding: 16px 20px;
+    background: var(--night); color: #fff; font: 700 17px/1 var(--display); letter-spacing: 0.01em;
+    box-shadow: 0 8px 22px #23264a40; transition: transform .1s, opacity .2s; }
+  #add:active { transform: scale(.98); }
+  #add:disabled { opacity: .55; }
+  #add .to { color: var(--moon); }
+
+  .msg { margin: 12px 2px 0; padding: 11px 14px; border-radius: 12px; font-size: 15px; white-space: pre-line; }
+  .msg.bad { background: #fbe7ea; color: #a8364a; }
+  .msg.good { background: #e7f4ed; color: #2d7553; }
+
+  /* ---- downloads */
+  h2 { font: 700 20px/1 var(--display); letter-spacing: -0.01em; margin: 28px 4px 12px; }
+  .empty { color: var(--muted); font-size: 14.5px; padding: 6px 4px; }
+  .job { display: grid; grid-template-columns: 64px 1fr; gap: 12px; align-items: start; background: var(--card);
+    border-radius: 16px; padding: 10px; margin-bottom: 10px; box-shadow: 0 1px 2px #23264a10; }
+  .thumb { width: 64px; height: 48px; border-radius: 10px; background: var(--mist) center/cover no-repeat; position: relative; }
+  .job.done .thumb::after { content: "✓"; position: absolute; right: -5px; bottom: -5px; width: 20px; height: 20px; border-radius: 50%;
+    background: var(--leaf); color: #fff; font: 700 12px/20px var(--body); text-align: center; border: 2px solid #fff; }
+  .job.failed .thumb::after { content: "!"; position: absolute; right: -5px; bottom: -5px; width: 20px; height: 20px; border-radius: 50%;
+    background: var(--rose); color: #fff; font: 700 12px/20px var(--body); text-align: center; border: 2px solid #fff; }
+  .job .t { font-weight: 600; font-size: 15px; line-height: 1.3; overflow-wrap: anywhere;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .job .s { font-size: 13.5px; color: var(--muted); margin-top: 3px; }
+  .job.failed .s { color: #a8364a; }
+  .prog { height: 5px; background: var(--mist); border-radius: 3px; margin-top: 8px; overflow: hidden; }
+  .prog > div { height: 100%; width: 0; border-radius: 3px; background: linear-gradient(90deg, var(--lilac), var(--moon)); transition: width .6s; }
+  .job.listing .prog > div { width: 30% !important; animation: slide 1.4s ease-in-out infinite; }
+  @keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+  .retry { margin-top: 8px; border: 0; border-radius: 999px; padding: 7px 14px; background: var(--night); color: #fff; font-weight: 600; font-size: 14px; }
+  details { margin-top: 6px; font-size: 13.5px; color: var(--muted); }
+  summary { cursor: pointer; }
+  details ol { margin: 6px 0 0; padding-left: 20px; }
+  details li.failed { color: #a8364a; }
+  details li.done::marker { color: var(--leaf); }
+  .tech { font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; opacity: .8; }
+
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 </style>
 </head>
 <body>
+<header>
+  <h1>Music</h1>
+  <p>Add songs to her player</p>
+</header>
+
 <main>
-  <h1>🎵 Music</h1>
-  <div id="shared" class="banner" hidden>Got your link. Choose an album, then press <b>Add</b>.</div>
+  <section class="card">
+    <div id="shared" class="shared" hidden>Got your song. Pick an album below.</div>
+    <p class="label"><label for="links">Song or playlist link</label></p>
+    <div class="linkbox">
+      <textarea id="links" placeholder="Paste a YouTube link — or several, one per line"></textarea>
+      <button id="paste" class="paste" type="button" hidden>Paste</button>
+    </div>
+    <p class="hint">A playlist link adds every song in it, in order.</p>
+  </section>
 
-  <label for="links">YouTube links</label>
-  <textarea id="links" placeholder="Paste one or more YouTube links (videos or playlists), one per line"></textarea>
-  <div class="hint">A playlist link adds the whole playlist, in its order.</div>
+  <section class="card">
+    <p class="label" id="albums-label">Album</p>
+    <div id="albums" class="albums" role="group" aria-labelledby="albums-label"></div>
+    <input id="newname" type="text" placeholder="Name the new album" hidden maxlength="80" autocomplete="off">
+    <div id="songs" class="songs" hidden></div>
+  </section>
 
-  <label for="album">Album</label>
-  <select id="album"></select>
-  <input id="newname" type="text" placeholder="Name of the new album" hidden maxlength="80">
-  <div class="hint">New songs go at the end of the album.</div>
-
-  <button id="add">Add</button>
   <div id="msg" class="msg" hidden></div>
 
   <h2>Downloads</h2>
-  <div id="jobs"><div class="hint">Nothing yet.</div></div>
+  <div id="jobs"><p class="empty">Nothing yet. Songs you add show up here.</p></div>
 </main>
+
+<div class="bar-bottom"><button id="add" type="button">Add</button></div>
 <script src="/app.js"></script>
 </body>
 </html>

@@ -38,7 +38,7 @@ import zlib
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 HERE = Path(__file__).resolve().parent
 STATIC = HERE / "static"
@@ -48,6 +48,7 @@ LIST_TIMEOUT = 15 * 60       # seconds to list a playlist
 ITEM_TIMEOUT = 60 * 60       # seconds to download one video (a Pi 3 is slow)
 KEEP_JOBS = 100              # finished jobs kept in the list
 KEEP_SECONDS = 14 * 24 * 3600
+DELETED_NAME = ".deleted"  # hidden too: deleted songs wait here, recoverable by hand
 TMP_NAME = ".tplayer-web-tmp"  # hidden: the music folder's .mpdignore skips dot names
 
 YOUTUBE_URL = re.compile(
@@ -91,6 +92,13 @@ def clean_album(name):
         if ch in "/\\" or unicodedata.category(ch) in ("Cc", "Cf", "Zl", "Zp"):
             raise ValueError("An album name can't contain / or \\. Please use letters, numbers and spaces.")
     return name
+
+
+def song_title(file):
+    """ "0003 Wheels on the bus.m4a" -> "Wheels on the bus" (display only)."""
+    stem = file.rsplit(".", 1)[0] if "." in file else file
+    m = NUMBER_PREFIX.match(stem)
+    return (stem[m.end():] if m else stem).strip() or stem
 
 
 def clean_title(title):
@@ -137,10 +145,10 @@ def friendly_error(stderr):
 # --------------------------------------------------------------------------- icons
 
 def make_png(size):
-    """A round orange icon with a white music note, drawn without any image library."""
+    """A round night-blue icon with a moon-yellow music note, drawn without any image library."""
     bg = (255, 255, 255, 0)
-    orange = (242, 140, 40, 255)
-    white = (255, 255, 255, 255)
+    orange = (35, 38, 74, 255)      # night #23264a (name kept: the drawing code below uses it)
+    white = (244, 201, 93, 255)     # moon #f4c95d
     c = size / 2
 
     def pixel(x, y):
@@ -231,6 +239,47 @@ class Jobs:
         except FileNotFoundError:
             names = []
         return sorted(names, key=lambda n: n.encode("utf-8"))
+
+    def album_songs(self, album):
+        """The songs in an album, in play order: [{file, title}]."""
+        if album not in self.albums():
+            raise ValueError("That album isn't there any more.")
+        d = self.album_dir(album)
+        files = sorted((p.name for p in d.iterdir() if p.is_file() and not p.name.startswith(".")),
+                       key=lambda n: n.encode("utf-8"))
+        return [{"file": f, "title": song_title(f)} for f in files]
+
+    def delete_song(self, album, file):
+        """Move one song to <music>/.deleted/<album>/ (hidden from mpd, recoverable by hand).
+        An album left with no songs is removed too. Returns True when the album went."""
+        with self.cond:
+            if album not in self.albums():
+                raise ValueError("That album isn't there any more.")
+            d = self.album_dir(album)
+            if not file or "/" in file or "\\" in file or file.startswith(".") or not (d / file).is_file():
+                raise ValueError("That song isn't there any more.")
+            trash = self.music / DELETED_NAME / album
+            trash.mkdir(parents=True, exist_ok=True)
+            dest = trash / file
+            if dest.exists():
+                dest = trash / f"{int(time.time())}-{file}"
+            os.replace(d / file, dest)
+            if any(not p.name.startswith(".") for p in d.iterdir()):
+                return False
+            for p in d.iterdir():           # only hidden leftovers: keep them with the deleted songs
+                os.replace(p, trash / p.name)
+            d.rmdir()
+            return True
+
+    def song_counts(self, names):
+        """Number of songs (non-hidden files) in each album folder."""
+        counts = {}
+        for n in names:
+            try:
+                counts[n] = sum(1 for p in (self.music / n).iterdir() if p.is_file() and not p.name.startswith("."))
+            except OSError:
+                pass
+        return counts
 
     def album_dir(self, album):
         path = self.music / album
@@ -497,7 +546,14 @@ def make_handler(jobs, icons):
             elif path in icons:
                 self._send(200, icons[path], "image/png", "max-age=86400")
             elif path == "/api/albums":
-                self._json(200, {"albums": jobs.albums()})
+                names = jobs.albums()
+                self._json(200, {"albums": names, "songs": jobs.song_counts(names)})
+            elif path == "/api/songs":
+                album = (parse_qs(urlsplit(self.path).query).get("album") or [""])[0]
+                try:
+                    self._json(200, {"album": album, "songs": jobs.album_songs(album)})
+                except ValueError as e:
+                    self._json(404, {"error": str(e)})
             elif path == "/api/jobs":
                 self._json(200, {"jobs": jobs.snapshot()})
             else:
@@ -518,6 +574,12 @@ def make_handler(jobs, icons):
 
             if path == "/api/jobs":
                 return self._add(body)
+            if path == "/api/delete":
+                try:
+                    gone = jobs.delete_song(str(body.get("album") or ""), str(body.get("file") or ""))
+                except ValueError as e:
+                    return self._json(404, {"error": str(e)})
+                return self._json(200, {"ok": True, "album_deleted": gone})
             m = re.fullmatch(r"/api/jobs/([0-9a-f]+)/retry", path)
             if m:
                 ok = jobs.retry(m.group(1))

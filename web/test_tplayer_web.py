@@ -111,7 +111,37 @@ class Flow(unittest.TestCase):
         self.fail("jobs did not finish")
 
     def test_albums_hide_dot_folders(self):
-        self.assertEqual(self.call("/api/albums")[1], {"albums": ["old"]})
+        self.assertEqual(self.call("/api/albums")[1], {"albums": ["old"], "songs": {"old": 1}})
+
+    def test_list_songs(self):
+        (self.music / "old" / "0002 second.mp3").write_text("x")
+        (self.music / "old" / ".junk").write_text("x")
+        code, r = self.call("/api/songs?album=old")
+        self.assertEqual(code, 200, r)
+        self.assertEqual(r["songs"], [{"file": "0002 second.mp3", "title": "second"},
+                                      {"file": "0007 existing.m4a", "title": "existing"}])
+        self.assertEqual(self.call("/api/songs?album=..")[0], 404)
+        self.assertEqual(self.call("/api/songs?album=nope")[0], 404)
+
+    def test_delete_song_then_album_goes_with_last_song(self):
+        (self.music / "old" / "0002 second.mp3").write_text("x")
+        code, r = self.call("/api/delete", {"album": "old", "file": "0002 second.mp3"})
+        self.assertEqual((code, r), (200, {"ok": True, "album_deleted": False}))
+        self.assertFalse((self.music / "old" / "0002 second.mp3").exists())
+        self.assertTrue((self.music / ".deleted" / "old" / "0002 second.mp3").exists())
+        code, r = self.call("/api/delete", {"album": "old", "file": "0007 existing.m4a"})
+        self.assertEqual((code, r), (200, {"ok": True, "album_deleted": True}))
+        self.assertFalse((self.music / "old").exists())
+        self.assertEqual(self.call("/api/albums")[1]["albums"], [])
+
+    def test_delete_refuses_escapes(self):
+        (self.music / "secret.txt").write_text("x")
+        for album, file in (("old", "../secret.txt"), ("old", ".."), ("..", "secret.txt"),
+                            ("old", ""), ("old", "missing.m4a"), (".hidden", "x")):
+            code, _ = self.call("/api/delete", {"album": album, "file": file})
+            self.assertEqual(code, 404, (album, file))
+        self.assertTrue((self.music / "secret.txt").exists())
+        self.assertTrue((self.music / "old" / "0007 existing.m4a").exists())
 
     def test_add_to_existing_album_continues_numbering(self):
         code, r = self.call("/api/jobs", {"links": "https://youtu.be/one", "album": "old"})
