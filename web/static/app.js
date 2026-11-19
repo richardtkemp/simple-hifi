@@ -63,7 +63,9 @@ function takeShared() {
   const q = new URLSearchParams(location.search);
   const parts = ["url", "text", "title"].map((k) => q.get(k)).filter(Boolean);
   if (!parts.length) return;
-  $("links").value = parts.join("\n");
+  // Apps share "link + video title"; keep only the links. No link at all: show what came.
+  const links = [...new Set(parts.join("\n").match(/https?:\/\/[^\s<>"']+/gi) || [])];
+  $("links").value = (links.length ? links : parts).join("\n");
   $("shared").hidden = false;
   history.replaceState(null, "", "/");   // a reload must not share it again
 }
