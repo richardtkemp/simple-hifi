@@ -169,6 +169,7 @@
 </main>
 
 <div class="bar-bottom"><button id="add" type="button">Add</button></div>
-<script src="/app.js"></script>
+<!-- the server fills in app.js's mtime: a new app.js gets a new URL (Cloudflare kept an old app.js once) -->
+<script src="/app.js?v=APPJS_VERSION"></script>
 </body>
 </html>

@@ -546,7 +546,10 @@ def make_handler(jobs, icons):
             path = urlsplit(self.path).path
             if path in STATIC_FILES:
                 name, ctype = STATIC_FILES[path]
-                self._send(200, (STATIC / name).read_bytes(), ctype)
+                body = (STATIC / name).read_bytes()
+                if name == "index.html":
+                    body = body.replace(b"APPJS_VERSION", str((STATIC / "app.js").stat().st_mtime_ns).encode())
+                self._send(200, body, ctype)
             elif path in icons:
                 self._send(200, icons[path], "image/png", "max-age=86400")
             elif path == "/api/albums":
