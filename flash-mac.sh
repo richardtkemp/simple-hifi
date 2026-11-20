@@ -22,7 +22,9 @@
 #   card when there is no backup, unless you set SKIP_SAVE=1.
 #
 # Needs, next to this script: setup.sh, web/ and wifi.env (WIFI_SSID=..., WIFI_PASS=...).
-# Optional: extra-keys.pub, more ssh public keys (one per line) that may log in.
+# Optional: extra-keys.pub, more ssh public keys (one per line) that may log in;
+#           cloudflared.token, the Cloudflare Tunnel token for the public web page;
+#           local.env, your own names (see local.env.example). All three are git-ignored.
 # Optional env: PI_USER (default: your Mac username), PI_HOST (default: local.env, else simple-hifi).
 #               PI_KEY: the public key file to use (default: the first of ~/.ssh/id_ed25519.pub,
 #               id_ecdsa.pub, id_rsa.pub).
@@ -210,6 +212,8 @@ EOF
   mkdir -p "$dir/tplayer/web/static"
   cp "$HERE/setup.sh" "$dir/tplayer/setup.sh"
   if [[ -f $HERE/local.env ]]; then cp "$HERE/local.env" "$dir/tplayer/local.env"; fi
+  # setup.sh installs it as root-only and deletes this copy on first boot.
+  if [[ -f $HERE/cloudflared.token ]]; then cp "$HERE/cloudflared.token" "$dir/tplayer/cloudflared.token"; fi
   cp "$HERE/web/tplayer_web.py" "$dir/tplayer/web/"
   cp "$HERE"/web/static/* "$dir/tplayer/web/static/"
   # The saved settings; setup.sh restores them on first boot, then deletes this copy.

@@ -44,12 +44,13 @@ WIFI_COUNTRY=GB
 WEB_PORT=8090
 WEB_LIB=/usr/local/lib/tplayer-web
 YTDLP=/usr/local/bin/yt-dlp
-# Cloudflare Tunnel token for the public web page. A secret: put it there by hand
-# (root, mode 600); never in this repo. No file = no tunnel, and that step is skipped.
+# Cloudflare Tunnel token for the public web page. A secret, never in this repo: it comes from
+# cloudflared.token next to this script (git-ignored; flash-mac.sh puts it on the card), or is put
+# there by hand (root, mode 600). No token = no tunnel, and that step is skipped.
 CF_TOKEN=/etc/cloudflared/tplayer.token
 HERE=$(dirname "$(readlink -f "$0")")
-# Your own names (git-ignored; see local.env.example): PLAYER_TITLE, PUBLIC_HOST.
-PLAYER_TITLE="" PUBLIC_HOST=""
+# Your own names (git-ignored; see local.env.example): PLAYER_TITLE, CONTACT_NAME, PUBLIC_HOST.
+PLAYER_TITLE="" CONTACT_NAME="" PUBLIC_HOST=""
 # shellcheck source=/dev/null
 if [[ -f $HERE/local.env ]]; then source "$HERE/local.env"; fi
 PLAYER_TITLE=${PLAYER_TITLE:-Music}
@@ -666,6 +667,7 @@ Environment=TPLAYER_MUSIC=$MUSIC
 Environment=TPLAYER_PORT=$WEB_PORT
 Environment=TPLAYER_YTDLP=$YTDLP
 Environment="TPLAYER_TITLE=${PLAYER_TITLE//%/%%}"
+Environment="TPLAYER_CONTACT=${CONTACT_NAME//%/%%}"
 ExecStart=/usr/bin/python3 $WEB_LIB/tplayer_web.py
 Nice=10
 Restart=always
@@ -689,6 +691,12 @@ MemoryMax=650M
 EOF
 
 # ---------------------------------------------------------------- public URL (Cloudflare Tunnel)
+if [[ -f $HERE/cloudflared.token ]]; then
+  echo "Installing the tunnel token from $HERE/cloudflared.token"
+  install -D -m 600 -o root -g root "$HERE/cloudflared.token" "$CF_TOKEN"
+  # The card's boot partition is readable by anyone holding the card: no copy stays there.
+  if [[ $HERE == /boot/* ]]; then rm -f "$HERE/cloudflared.token"; fi
+fi
 # The tunnel runs on the Pi, so no static IP is needed. Cloudflare Access (login) and the
 # tunnel's route to http://localhost:$WEB_PORT are set up in Cloudflare, not here.
 if [[ -f $CF_TOKEN ]]; then

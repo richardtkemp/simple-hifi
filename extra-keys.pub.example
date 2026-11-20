@@ -1,0 +1,3 @@
+# Copy to extra-keys.pub (git-ignored): more ssh public keys that may log in to the Pi,
+# one per line. flash-mac.sh adds them next to your Mac's key. Blank lines and # comments are skipped.
+# ssh-ed25519 AAAA... me@laptop

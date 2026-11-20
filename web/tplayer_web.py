@@ -19,6 +19,7 @@ Standard library only. Settings come from the environment:
   TPLAYER_YTDLP   yt-dlp command           (default yt-dlp)
   TPLAYER_MPD     mpd address, host:port   (default localhost:6600), for "playing now"
   TPLAYER_TITLE   page and app name        (default Music)
+  TPLAYER_CONTACT who error messages say to tell (default "the person who set up the player")
 
 A download can be stopped (yt-dlp and everything it started is killed; songs of a
 playlist that were already added stay). A failed download can be removed from the
@@ -135,13 +136,17 @@ def clean_title(title):
     return title.rstrip() or "untitled"
 
 
+# Who the error messages tell people to ask for help (TPLAYER_CONTACT).
+CONTACT = "the person who set up the player"
+
+
 def friendly_error(stderr):
     """A plain-words message for a yt-dlp failure."""
     s = (stderr or "").lower()
     if "no space left" in s:
-        return "The player's memory card is full. Tell the person who set up the player."
+        return f"The player's memory card is full. Tell {CONTACT}."
     if "confirm you" in s and "bot" in s:
-        return "YouTube is refusing downloads at the moment. Try again later; if it keeps happening, tell the person who set up the player."
+        return f"YouTube is refusing downloads at the moment. Try again later; if it keeps happening, tell {CONTACT}."
     if "confirm your age" in s or "age-restricted" in s or "inappropriate for some users" in s:
         return "YouTube only shows this video to signed-in adults, so it can't be added."
     if any(k in s for k in ("private video", "video unavailable", "has been removed", "members-only",
@@ -155,7 +160,7 @@ def friendly_error(stderr):
                             "connection reset", "network is unreachable", "temporary failure in name resolution",
                             "http error 5")):
         return "The player couldn't reach YouTube. Check the internet is working, then press Try again."
-    return "Something went wrong with this download. Press Try again; if it fails again, tell the person who set up the player."
+    return f"Something went wrong with this download. Press Try again; if it fails again, tell {CONTACT}."
 
 
 PERMANENT_ERRORS = (
@@ -893,6 +898,8 @@ def main():
     ytdlp = os.environ.get("TPLAYER_YTDLP", "yt-dlp")
     mpd = os.environ.get("TPLAYER_MPD", "localhost:6600")
     title = os.environ.get("TPLAYER_TITLE") or "Music"
+    global CONTACT
+    CONTACT = os.environ.get("TPLAYER_CONTACT") or CONTACT
 
     shutil.rmtree(Path(music) / TMP_NAME, ignore_errors=True)  # leftovers from a crash
     jobs = Jobs(music, state, ytdlp)

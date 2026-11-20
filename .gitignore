@@ -2,3 +2,5 @@ wifi.env
 music/
 __pycache__/
 local.env
+extra-keys.pub
+cloudflared.token

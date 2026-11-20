@@ -382,7 +382,7 @@ class Flow(unittest.TestCase):
         self.assertEqual(job["retry_in"], 2 * 3600)
 
     def test_no_auto_retry_for_private_or_removed(self):
-        # a video that can never work is not retried by itself; a network failure is.
+        # A video that can never work is not retried by itself; a network failure is.
         self.call("/api/jobs", {"links": "https://youtu.be/private", "album": "old"})
         self.call("/api/jobs", {"links": "https://www.youtube.com/watch?v=bad", "album": "old"})
         jobs = self.wait_idle()
