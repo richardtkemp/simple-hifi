@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="360" viewBox="0 0 1280 360" role="img" aria-label="simple-hifi">
+  <defs>
+    <style>
+      @font-face { font-family: "BG"; font-weight: 700; src: url(data:font/woff2;base64,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) format("woff2"); }
+      .t { font: 700 112px "BG", "Bricolage Grotesque", system-ui, sans-serif; letter-spacing: -3px; fill: #fff; }
+      .s { font: 400 30px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; fill: #ffe3de; }
+    </style>
+  </defs>
+  <rect width="1280" height="360" rx="28" fill="#ef5a47"/>
+  <circle cx="1180" cy="-40" r="190" fill="#ffffff" opacity=".07"/>
+  <circle cx="60" cy="400" r="150" fill="#cf3f2c" opacity=".45"/>
+  <text class="t" x="80" y="190">simple-hifi</text>
+  <text class="s" x="84" y="252">A music player for little ones: one button to play,</text>
+  <text class="s" x="84" y="294">one to change playlist, and a web page to add songs.</text>
+  <rect x="1010" y="100" width="24" height="168" rx="12.0" fill="#ffc23d">
+    <animate attributeName="height" values="42.0;168;42.0" dur="2.2s" begin="-0.2s" repeatCount="indefinite" calcMode="spline" keySplines=".45 0 .55 1;.45 0 .55 1"/>
+    <animate attributeName="y" values="226.0;100;226.0" dur="2.2s" begin="-0.2s" repeatCount="indefinite" calcMode="spline" keySplines=".45 0 .55 1;.45 0 .55 1"/>
+  </rect>
+  <rect x="1050" y="100" width="24" height="168" rx="12.0" fill="#ffffff">
+    <animate attributeName="height" values="42.0;168;42.0" dur="2.2s" begin="-0.7s" repeatCount="indefinite" calcMode="spline" keySplines=".45 0 .55 1;.45 0 .55 1"/>
+    <animate attributeName="y" values="226.0;100;226.0" dur="2.2s" begin="-0.7s" repeatCount="indefinite" calcMode="spline" keySplines=".45 0 .55 1;.45 0 .55 1"/>
+  </rect>
+  <rect x="1090" y="100" width="24" height="168" rx="12.0" fill="#47b3ea">
+    <animate attributeName="height" values="42.0;168;42.0" dur="2.2s" begin="-0.4s" repeatCount="indefinite" calcMode="spline" keySplines=".45 0 .55 1;.45 0 .55 1"/>
+    <animate attributeName="y" values="226.0;100;226.0" dur="2.2s" begin="-0.4s" repeatCount="indefinite" calcMode="spline" keySplines=".45 0 .55 1;.45 0 .55 1"/>
+  </rect>
+  <rect x="1130" y="100" width="24" height="168" rx="12.0" fill="#4cc28d">
+    <animate attributeName="height" values="42.0;168;42.0" dur="2.2s" begin="-0.9s" repeatCount="indefinite" calcMode="spline" keySplines=".45 0 .55 1;.45 0 .55 1"/>
+    <animate attributeName="y" values="226.0;100;226.0" dur="2.2s" begin="-0.9s" repeatCount="indefinite" calcMode="spline" keySplines=".45 0 .55 1;.45 0 .55 1"/>
+  </rect>
+  <rect x="1170" y="100" width="24" height="168" rx="12.0" fill="#ffffff">
+    <animate attributeName="height" values="42.0;168;42.0" dur="2.2s" begin="-0.1s" repeatCount="indefinite" calcMode="spline" keySplines=".45 0 .55 1;.45 0 .55 1"/>
+    <animate attributeName="y" values="226.0;100;226.0" dur="2.2s" begin="-0.1s" repeatCount="indefinite" calcMode="spline" keySplines=".45 0 .55 1;.45 0 .55 1"/>
+  </rect>
+</svg>

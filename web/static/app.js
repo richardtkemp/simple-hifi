@@ -100,7 +100,7 @@ async function loadSongs() {
   } catch (e) {
     return;   // the album list refresh will catch up
   }
-  if (album !== chosen) return;           // she picked another album meanwhile
+  if (album !== chosen) return;           // another album was picked meanwhile
   // Leave the list alone while a delete is waiting for its second tap.
   if (songsFor === album && box.querySelector(".del.sure")) return;
   songsFor = album;
