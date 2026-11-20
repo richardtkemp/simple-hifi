@@ -22,6 +22,9 @@ import json, sys
 args = sys.argv[1:]
 url = args[-1]
 if "-J" in args:
+    if "flaky" in url:
+        sys.stderr.write("ERROR: [youtube] abc: Unable to download webpage: timed out\n")
+        sys.exit(1)
     if "private" in url:
         sys.stderr.write("ERROR: [youtube] abc: Private video. Sign in if you've been granted access\n")
         sys.exit(1)
@@ -29,6 +32,11 @@ if "-J" in args:
         print(json.dumps({"_type": "playlist", "title": "Slow list", "entries": [
             {"id": "aaa", "title": "First / song", "url": "https://www.youtube.com/watch?v=aaa"},
             {"id": "slow", "title": "Long one", "url": "https://www.youtube.com/watch?v=slow"}]}))
+    elif "list=PLnet" in url:
+        print(json.dumps({"_type": "playlist", "title": "Net list", "entries": [
+            {"id": "aaa", "title": "First / song", "url": "https://www.youtube.com/watch?v=aaa"},
+            {"id": "net", "title": "Flaky", "url": "https://www.youtube.com/watch?v=net"},
+            {"id": "ccc", "title": "Third", "url": "https://www.youtube.com/watch?v=ccc"}]}))
     elif "list=" in url:
         print(json.dumps({"_type": "playlist", "title": "My list", "entries": [
             {"id": "aaa", "title": "First / song", "url": "https://www.youtube.com/watch?v=aaa"},
@@ -39,6 +47,9 @@ if "-J" in args:
     sys.exit(0)
 if url.endswith("bad"):
     sys.stderr.write("ERROR: [youtube] bad: Video unavailable\n")
+    sys.exit(1)
+if url.endswith("net"):
+    sys.stderr.write("ERROR: [youtube] net: Unable to download webpage: timed out\n")
     sys.exit(1)
 out = args[args.index("-o") + 1].replace("%(ext)s", "m4a")
 if url.endswith("slow"):
@@ -296,7 +307,7 @@ class Flow(unittest.TestCase):
 
     def test_auto_retry_backoff_with_fake_clock(self):
         hour = 3600
-        self.call("/api/jobs", {"links": "https://www.youtube.com/watch?v=bad", "album": "old"})
+        self.call("/api/jobs", {"links": "https://www.youtube.com/watch?v=net", "album": "old"})
         job = self.wait_idle()[0]
         self.assertEqual(job["status"], "failed")
         item = job["items"][0]
@@ -317,8 +328,8 @@ class Flow(unittest.TestCase):
         self.assertEqual(item["retry_at"], start + 420 * 60 + 8 * hour)
 
     def test_auto_retry_at_most_one_an_hour_and_only_failed_songs(self):
-        self.call("/api/jobs", {"links": "https://www.youtube.com/watch?v=aaa&list=PL1", "album": "New", "new": True})
-        self.call("/api/jobs", {"links": "https://youtu.be/private", "album": "old"})
+        self.call("/api/jobs", {"links": "https://www.youtube.com/watch?v=aaa&list=PLnet", "album": "New", "new": True})
+        self.call("/api/jobs", {"links": "https://youtu.be/flaky", "album": "old"})
         self.wait_idle()
         self.clock.t += 5 * 3600          # both are due
         first = self.jobs.auto_retry()
@@ -338,7 +349,7 @@ class Flow(unittest.TestCase):
         self.assertEqual(sorted(os.listdir(self.music / "New")), ["0001 First - song.m4a", "0003 Third.m4a"])
 
     def test_auto_retry_waits_for_running_download(self):
-        self.call("/api/jobs", {"links": "https://youtu.be/private", "album": "old"})
+        self.call("/api/jobs", {"links": "https://youtu.be/flaky", "album": "old"})
         self.wait_idle()
         self.clock.t += 2 * 3600
         self.call("/api/jobs", {"links": "https://youtu.be/slow", "album": "old"})
@@ -350,13 +361,31 @@ class Flow(unittest.TestCase):
         self.assertIsNotNone(self.jobs.auto_retry())
 
     def test_manual_retry_still_works_and_counts(self):
-        self.call("/api/jobs", {"links": "https://youtu.be/private", "album": "old"})
+        self.call("/api/jobs", {"links": "https://youtu.be/flaky", "album": "old"})
         job = self.wait_idle()[0]
         self.assertEqual(job["fails"], 1)
         self.assertEqual(self.call(f"/api/jobs/{job['id']}/retry", {})[0], 200)
         job = self.wait_idle()[0]
         self.assertEqual(job["fails"], 2)
         self.assertEqual(job["retry_in"], 2 * 3600)
+
+    def test_no_auto_retry_for_private_or_removed(self):
+        # a video that can never work is not retried by itself; a network failure is.
+        self.call("/api/jobs", {"links": "https://youtu.be/private", "album": "old"})
+        self.call("/api/jobs", {"links": "https://www.youtube.com/watch?v=bad", "album": "old"})
+        jobs = self.wait_idle()
+        self.assertEqual([j["status"] for j in jobs], ["failed", "failed"])
+        for j in jobs:
+            self.assertNotIn("retry_in", j)
+        self.clock.t += 30 * 24 * 3600
+        self.assertIsNone(self.jobs.auto_retry())
+        # The manual Try again still works on them.
+        self.assertEqual(self.call(f"/api/jobs/{jobs[0]['id']}/retry", {})[0], 200)
+        self.wait_idle()
+        self.call("/api/jobs", {"links": "https://youtu.be/flaky", "album": "old"})
+        self.wait_idle()
+        self.clock.t += 2 * 3600
+        self.assertIsNotNone(self.jobs.auto_retry())
 
     # ---- playing now
 

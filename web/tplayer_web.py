@@ -156,6 +156,22 @@ def friendly_error(stderr):
     return "Something went wrong with this download. Press Try again; if it fails again, tell the person who set up the player."
 
 
+PERMANENT_ERRORS = (
+    # YouTube says the video can never be downloaded: no automatic retry.
+    "private video", "video unavailable", "has been removed", "members-only",
+    "not available in your country", "this video is unavailable",
+    "account associated with this video has been terminated",
+    "playlist does not exist", "confirm your age", "age-restricted", "inappropriate for some users",
+    "unsupported url", "is not a valid url", "incomplete youtube id",
+)
+
+
+def is_permanent(stderr):
+    """True when a failure can never succeed by trying again (private, removed, restricted, bad link)."""
+    s = (stderr or "").lower()
+    return any(k in s for k in PERMANENT_ERRORS)
+
+
 def retry_delay(fails, r):
     """Seconds to wait before the automatic retry after the fails-th failure in a row.
     r is a random number in [0, 1): it spreads the wait by +-RETRY_JITTER.
@@ -458,9 +474,15 @@ class Jobs:
             else:
                 yield job, job
 
-    def _note_failure(self, unit):
-        """Count a failure of a song (or link) and set when it is tried again by itself."""
+    def _note_failure(self, unit, problem=""):
+        """Count a failure of a song (or link) and set when it is tried again by itself.
+        A failure that can never succeed (is_permanent) is never retried automatically."""
         unit["fails"] = unit.get("fails", 0) + 1
+        if is_permanent(problem):
+            unit["no_auto_retry"] = True
+            unit.pop("retry_at", None)
+            return
+        unit.pop("no_auto_retry", None)
         unit["retry_at"] = self.clock() + retry_delay(unit["fails"], self.rng())
 
     def auto_retry(self):
@@ -473,7 +495,7 @@ class Jobs:
             if any(j["status"] in ACTIVE for j in self.jobs):
                 return None
             due = [(u.get("retry_at", 0), job, u) for job, u in self._failed_units()
-                   if u.get("retry_at", 0) <= now]
+                   if not u.get("no_auto_retry") and u.get("retry_at", 0) <= now]
             if not due:
                 return None
             _, job, unit = min(due, key=lambda d: d[0])
@@ -502,8 +524,10 @@ class Jobs:
             for job in jobs:
                 if job["status"] == "failed":
                     units = [i for i in job["items"] if i["status"] == "failed"] or [job]
-                    at = max(min(u.get("retry_at", 0) for u in units), soonest)
-                    job["retry_in"] = max(0, int(at - now))
+                    units = [u for u in units if not u.get("no_auto_retry")]
+                    if units:   # only private/removed/bad-link failures left: no "will try again"
+                        at = max(min(u.get("retry_at", 0) for u in units), soonest)
+                        job["retry_in"] = max(0, int(at - now))
             return jobs
 
     # ---- worker
@@ -527,7 +551,7 @@ class Jobs:
                         job["error"] = friendly_error(str(e))
                         job["detail"] = repr(e)
                         job["finished"] = time.time()
-                        self._note_failure(job)
+                        self._note_failure(job, str(e))
                     self._save()
             finally:
                 with self.cond:
@@ -636,7 +660,7 @@ class Jobs:
                 with self.cond:
                     job.update(status="failed", error=friendly_error(problem), detail=problem[-2000:],
                                finished=time.time())
-                    self._note_failure(job)
+                    self._note_failure(job, problem)
                     self._save()
                 return
         self._set_status(job, "downloading")
@@ -702,7 +726,7 @@ class Jobs:
                     problem = err or f"yt-dlp exited with {code} and left {len(files)} files"
                     item.update(status="failed", percent=None, error=friendly_error(problem),
                                 detail=problem[-2000:])
-                    self._note_failure(item)
+                    self._note_failure(item, problem)
                     self._save()
                     return
                 dest = self._place(job["album"], item, files[0])
