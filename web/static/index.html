@@ -127,6 +127,23 @@
   .job.listing .prog > div { width: 30% !important; animation: slide 1.4s ease-in-out infinite; }
   @keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
   .retry { margin-top: 8px; border: 0; border-radius: 999px; padding: 7px 14px; background: var(--night); color: #fff; font-weight: 600; font-size: 14px; }
+  .acts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .acts .retry + .soft, .acts .soft { margin-top: 8px; }
+  .soft { border: 0; border-radius: 999px; padding: 7px 14px; background: var(--mist); color: var(--ink); font-weight: 600; font-size: 14px; }
+  .soft.sure { background: var(--rose); color: #fff; }
+  .auto { font-size: 13px; color: var(--muted); margin-top: 6px; }
+  .h2row { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+  .h2row button { border: 0; background: transparent; color: var(--lilac-dk); font-weight: 600; font-size: 14px; padding: 4px 4px; }
+
+  /* ---- playing now */
+  .now { display: grid; grid-template-columns: 44px 1fr; gap: 12px; align-items: center; }
+  .now .disc { width: 44px; height: 44px; border-radius: 50%; background: var(--night); color: var(--moon);
+    display: grid; place-items: center; font-size: 20px; }
+  .now.play .disc { animation: spin 6s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .now .what { font: 700 16px/1.25 var(--display); overflow-wrap: anywhere; }
+  .now .where { font-size: 13.5px; color: var(--muted); margin-top: 2px; }
+  .now .label { margin: 0 0 4px; }
   details { margin-top: 6px; font-size: 13.5px; color: var(--muted); }
   summary { cursor: pointer; }
   details ol { margin: 6px 0 0; padding-left: 20px; }
@@ -145,6 +162,15 @@
 </header>
 
 <main>
+  <section id="now" class="card now" hidden aria-live="polite">
+    <div class="disc" aria-hidden="true">♪</div>
+    <div>
+      <p class="label" id="now-state">Playing now</p>
+      <div class="what" id="now-song"></div>
+      <div class="where" id="now-album"></div>
+    </div>
+  </section>
+
   <section class="card">
     <div id="shared" class="shared" hidden>Got your song. Pick an album below.</div>
     <p class="label"><label for="links">Song or playlist link</label></p>
@@ -164,7 +190,7 @@
 
   <div id="msg" class="msg" hidden></div>
 
-  <h2>Downloads</h2>
+  <div class="h2row"><h2>Downloads</h2><button id="clearfailed" type="button" hidden>Remove the ones that didn't work</button></div>
   <div id="jobs"><p class="empty">Nothing yet. Songs you add show up here.</p></div>
 </main>
 

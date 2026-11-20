@@ -250,6 +250,7 @@ function statusText(job) {
       return items.length > 1 ? "Downloading " + pos + " of " + items.length + pct : "Downloading" + pct;
     }
     case "done": return "Added " + (done === 1 ? "1 song" : done + " songs") + " to “" + pretty(job.album) + "”";
+    case "cancelling": return "Stopping…";
     case "failed": return (done ? "Added " + done + ". " : "") + (job.error || "It didn't work.");
   }
   return job.status;
@@ -270,6 +271,42 @@ function videoId(job) {
   return m ? m[1] : null;
 }
 
+// "in about 3 hours" — rough on purpose: the player only retries when nothing else is downloading.
+function whenText(sec) {
+  if (sec < 120) return "in a minute or two";
+  if (sec < 3600) return "in about " + Math.round(sec / 600) * 10 + " minutes";
+  const h = Math.round(sec / 3600);
+  if (h < 36) return h === 1 ? "in about an hour" : "in about " + h + " hours";
+  return "in about " + Math.round(sec / 86400) + " days";
+}
+
+// First tap asks, second tap stops (like delete), so a stray tap can't lose a long download.
+function stopButton(job) {
+  const b = el("button", "soft", "Stop");
+  b.type = "button";
+  b.dataset.id = job.id;
+  b.addEventListener("click", async () => {
+    if (!b.classList.contains("sure")) {
+      b.classList.add("sure");
+      b.textContent = "Stop this download";
+      stopAsking = job.id;
+      setTimeout(() => { if (stopAsking === job.id) stopAsking = null; b.classList.remove("sure"); b.textContent = "Stop"; }, 4000);
+      return;
+    }
+    stopAsking = null;
+    b.disabled = true;
+    try {
+      await api("/api/jobs/" + job.id + "/cancel", {});
+      const items = job.items || [];
+      const done = items.filter((i) => i.status === "done").length;
+      showMsg("Stopped." + (done ? " The " + (done === 1 ? "song" : done + " songs") + " already added stay in the album." : ""), true);
+    } catch (e) { showMsg(e.message); }
+    refresh();
+  });
+  return b;
+}
+let stopAsking = null;   // job id whose Stop is waiting for its second tap
+
 function renderJob(job) {
   const box = el("div", "job " + job.status);
   const th = el("div", "thumb");
@@ -288,13 +325,30 @@ function renderJob(job) {
     body.append(bar);
   }
   if (job.status === "failed") {
+    if (job.retry_in != null) body.append(el("div", "auto", "It will try again by itself " + whenText(job.retry_in) + "."));
+    const acts = el("div", "acts");
     const b = el("button", "retry", "Try again");
+    b.type = "button";
     b.addEventListener("click", async () => {
       b.disabled = true;
       try { await api("/api/jobs/" + job.id + "/retry", {}); } catch (e) { showMsg(e.message); }
       refresh();
     });
-    body.append(b);
+    const rm = el("button", "soft", "Remove");
+    rm.type = "button";
+    rm.title = "Take it off the list. It won't be tried again.";
+    rm.addEventListener("click", async () => {
+      rm.disabled = true;
+      try { await api("/api/jobs/" + job.id + "/clear", {}); } catch (e) { showMsg(e.message); }
+      refresh();
+    });
+    acts.append(b, rm);
+    body.append(acts);
+  }
+  if (job.status === "queued" || job.status === "listing" || job.status === "downloading") {
+    const acts = el("div", "acts");
+    acts.append(stopButton(job));
+    body.append(acts);
   }
   const items = job.items || [];
   if (items.length > 1 || job.detail || items.some((i) => i.detail)) {
@@ -321,14 +375,20 @@ async function refresh() {
     const list = $("jobs");
     // Keep any open "Songs" lists open across refreshes.
     const open = new Set([...list.querySelectorAll("details[open]")].map((d) => d.dataset.id));
+    if (stopAsking && jobs.some((j) => j.id === stopAsking)) {   // don't redraw under a pending Stop
+      pollTimer = setTimeout(refresh, 1000);
+      return;
+    }
     list.textContent = "";
+    const failed = jobs.filter((j) => j.status === "failed").length;
+    $("clearfailed").hidden = failed < 2;
     if (!jobs.length) list.append(el("p", "empty", "Nothing yet. Songs you add show up here."));
     for (const j of jobs) {
       const node = renderJob(j);
       const d = node.querySelector("details");
       if (d) { d.dataset.id = j.id; d.open = open.has(j.id); }
       list.append(node);
-      if (j.status === "queued" || j.status === "listing" || j.status === "downloading") busy = true;
+      if (j.status === "queued" || j.status === "listing" || j.status === "downloading" || j.status === "cancelling") busy = true;
     }
   } catch (e) {
     busy = true;   // keep trying
@@ -337,8 +397,40 @@ async function refresh() {
   pollTimer = setTimeout(refresh, busy ? 3000 : 20000);
 }
 
-document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
+$("clearfailed").addEventListener("click", async () => {
+  $("clearfailed").disabled = true;
+  try { await api("/api/clear-failed", {}); } catch (e) { showMsg(e.message); }
+  $("clearfailed").disabled = false;
+  refresh();
+});
+
+// ---- playing now (what the player is playing, from mpd)
+
+let nowTimer = null;
+
+async function refreshNow() {
+  clearTimeout(nowTimer);
+  try {
+    const n = await api("/api/now");
+    const box = $("now");
+    box.hidden = false;
+    box.classList.toggle("play", n.state === "play");
+    if (n.state === "play" || n.state === "pause") {
+      $("now-state").textContent = n.state === "play" ? "Playing now" : "Paused";
+      $("now-song").textContent = n.song || "";
+      $("now-album").textContent = n.album ? "from “" + pretty(n.album) + "”" : "";
+    } else {
+      $("now-state").textContent = "Playing now";
+      $("now-song").textContent = n.state === "off" ? "The player isn't answering" : "Nothing is playing";
+      $("now-album").textContent = "";
+    }
+  } catch (e) { /* keep the last one shown */ }
+  if (!document.hidden) nowTimer = setTimeout(refreshNow, 5000);
+}
+
+document.addEventListener("visibilitychange", () => { if (!document.hidden) { refresh(); refreshNow(); } });
 
 takeShared();
 loadAlbums().catch((e) => showMsg(e.message));
 refresh();
+refreshNow();

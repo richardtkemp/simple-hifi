@@ -3,6 +3,8 @@
 
 import json
 import os
+import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -23,7 +25,11 @@ if "-J" in args:
     if "private" in url:
         sys.stderr.write("ERROR: [youtube] abc: Private video. Sign in if you've been granted access\n")
         sys.exit(1)
-    if "list=" in url:
+    if "list=PLslow" in url:
+        print(json.dumps({"_type": "playlist", "title": "Slow list", "entries": [
+            {"id": "aaa", "title": "First / song", "url": "https://www.youtube.com/watch?v=aaa"},
+            {"id": "slow", "title": "Long one", "url": "https://www.youtube.com/watch?v=slow"}]}))
+    elif "list=" in url:
         print(json.dumps({"_type": "playlist", "title": "My list", "entries": [
             {"id": "aaa", "title": "First / song", "url": "https://www.youtube.com/watch?v=aaa"},
             {"id": "bad", "title": "Gone", "url": "https://www.youtube.com/watch?v=bad"},
@@ -35,6 +41,15 @@ if url.endswith("bad"):
     sys.stderr.write("ERROR: [youtube] bad: Video unavailable\n")
     sys.exit(1)
 out = args[args.index("-o") + 1].replace("%(ext)s", "m4a")
+if url.endswith("slow"):
+    # Like a real download: a part file, and a child process (ffmpeg/Node), then a long wait.
+    import os, subprocess, time
+    open(out + ".part", "w").write("half")
+    here = os.path.dirname(os.path.abspath(sys.argv[0]))
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+    open(os.path.join(here, "child.pid"), "w").write(f"{child.pid} {os.getpid()}")
+    print("PROGRESS 10 100 NA", flush=True)
+    time.sleep(120)
 print("PROGRESS 50 100 NA", flush=True)
 open(out, "w").write(url)
 print("PROGRESS 100 100 NA", flush=True)
@@ -69,6 +84,93 @@ class Helpers(unittest.TestCase):
         self.assertTrue(tw.make_png(48).startswith(b"\x89PNG"))
 
 
+class FakeClock:
+    def __init__(self, t=1_000_000.0):
+        self.t = t
+
+    def __call__(self):
+        return self.t
+
+
+def alive(pid):
+    """True while pid runs (a zombie counts as gone)."""
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            return f.read().rsplit(")", 1)[1].split()[0] != "Z"
+    except FileNotFoundError:
+        return False
+
+
+class FakeMpd:
+    """Answers status/currentsong like mpd 0.24, from a dict the test changes."""
+
+    def __init__(self):
+        self.status = {"state": "stop"}
+        self.song = {}
+        self.sock = socket.socket()
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.listen()
+        self.addr = "127.0.0.1:%d" % self.sock.getsockname()[1]
+        threading.Thread(target=self._serve, daemon=True).start()
+
+    def _serve(self):
+        while True:
+            try:
+                conn, _ = self.sock.accept()
+            except OSError:
+                return
+            with conn, conn.makefile("rwb") as f:
+                f.write(b"OK MPD 0.24.0\n")
+                f.flush()
+                for line in f:
+                    reply = {"status": self.status, "currentsong": self.song}.get(line.strip().decode())
+                    if reply is None:
+                        break
+                    for k, v in reply.items():
+                        f.write(f"{k}: {v}\n".encode())
+                    f.write(b"OK\n")
+                    f.flush()
+
+    def close(self):
+        try:
+            self.sock.shutdown(socket.SHUT_RDWR)   # wakes the accept() above
+        except OSError:
+            pass
+        self.sock.close()
+
+
+class Backoff(unittest.TestCase):
+    def test_schedule_doubles_to_a_cap_with_jitter(self):
+        hour = 3600
+        mid = [tw.retry_delay(n, 0.5) / hour for n in range(1, 11)]
+        self.assertEqual(mid, [1, 2, 4, 8, 16, 32, 64, 128, 168, 168])
+        self.assertAlmostEqual(tw.retry_delay(1, 0.0), 0.8 * hour)
+        self.assertAlmostEqual(tw.retry_delay(1, 0.999999), 1.2 * hour, places=0)
+        self.assertAlmostEqual(tw.retry_delay(20, 0.0), 0.8 * 168 * hour)
+
+
+class NowPlaying(unittest.TestCase):
+    def setUp(self):
+        self.mpd = FakeMpd()
+
+    def tearDown(self):
+        self.mpd.close()
+
+    def test_states(self):
+        self.assertEqual(tw.now_playing(self.mpd.addr), {"state": "stop", "album": None, "song": None})
+        self.mpd.status = {"state": "play", "song": "3"}
+        self.mpd.song = {"file": "Pixabay/0017-starostin kids music.mp3", "Title": "x"}
+        self.assertEqual(tw.now_playing(self.mpd.addr),
+                         {"state": "play", "album": "Pixabay", "song": "starostin kids music"})
+        self.mpd.status = {"state": "pause"}
+        self.assertEqual(tw.now_playing(self.mpd.addr)["state"], "pause")
+
+    def test_player_off(self):
+        addr = self.mpd.addr
+        self.mpd.close()
+        self.assertEqual(tw.now_playing(addr)["state"], "off")
+
+
 class Flow(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -81,14 +183,26 @@ class Flow(unittest.TestCase):
         fake = root / "yt-dlp"
         fake.write_text(FAKE_YTDLP)
         fake.chmod(0o755)
-        self.jobs = tw.Jobs(self.music, root / "state", f"{sys.executable} {fake}")
+        self.pidfile = root / "child.pid"
+        self.clock = FakeClock()
+        self.jobs = tw.Jobs(self.music, root / "state", f"{sys.executable} {fake}",
+                            clock=self.clock, rng=lambda: 0.5)
         threading.Thread(target=self.jobs.run, daemon=True).start()
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), tw.make_handler(self.jobs, {}))
+        self.mpd = FakeMpd()
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), tw.make_handler(self.jobs, {}, self.mpd.addr))
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
 
     def tearDown(self):
         self.server.shutdown()
+        self.server.server_close()
+        self.mpd.close()
+        if self.pidfile.exists():       # never leave a fake child behind
+            for pid in map(int, self.pidfile.read_text().split()):
+                try:
+                    os.kill(pid, 9)
+                except ProcessLookupError:
+                    pass
         self.tmp.cleanup()
 
     def call(self, path, body=None):
@@ -109,6 +223,147 @@ class Flow(unittest.TestCase):
                 return jobs
             time.sleep(0.05)
         self.fail("jobs did not finish")
+
+    def wait_for(self, check, what):
+        for _ in range(200):
+            if check():
+                return
+            time.sleep(0.05)
+        self.fail(what)
+
+    # ---- clear failed
+
+    def test_clear_failed_download_is_not_retried(self):
+        self.call("/api/jobs", {"links": "https://youtu.be/private", "album": "old"})
+        self.call("/api/jobs", {"links": "https://youtu.be/one", "album": "old"})
+        jobs = self.wait_idle()
+        failed = next(j for j in jobs if j["status"] == "failed")
+        done = next(j for j in jobs if j["status"] == "done")
+        self.assertEqual(self.call(f"/api/jobs/{done['id']}/clear", {})[0], 404)   # only failed ones
+        self.assertEqual(self.call(f"/api/jobs/{failed['id']}/clear", {}), (200, {"ok": True}))
+        self.assertEqual([j["id"] for j in self.call("/api/jobs")[1]["jobs"]], [done["id"]])
+        self.clock.t += 30 * 24 * 3600
+        self.assertIsNone(self.jobs.auto_retry())
+        self.assertEqual(self.call(f"/api/jobs/{failed['id']}/retry", {})[0], 404)
+
+    def test_clear_all_failed(self):
+        self.call("/api/jobs", {"links": "https://youtu.be/private https://youtu.be/private2 https://youtu.be/one",
+                                "album": "old"})
+        self.wait_idle()
+        self.assertEqual(self.call("/api/clear-failed", {}), (200, {"ok": True}))
+        self.assertEqual([j["status"] for j in self.call("/api/jobs")[1]["jobs"]], ["done"])
+
+    # ---- cancel
+
+    def test_cancel_waiting_download(self):
+        self.call("/api/jobs", {"links": "https://youtu.be/slow", "album": "old"})
+        self.wait_for(self.pidfile.exists, "slow download did not start")
+        self.call("/api/jobs", {"links": "https://youtu.be/one", "album": "old"})
+        waiting = self.call("/api/jobs")[1]["jobs"][0]
+        self.assertEqual(waiting["status"], "queued")
+        self.assertEqual(self.call(f"/api/jobs/{waiting['id']}/cancel", {}), (200, {"ok": True}))
+        running = self.call("/api/jobs")[1]["jobs"]
+        self.assertEqual(len(running), 1)
+        self.call(f"/api/jobs/{running[0]['id']}/cancel", {})
+        self.wait_for(lambda: not self.call("/api/jobs")[1]["jobs"], "jobs not removed")
+        self.assertEqual(sorted(os.listdir(self.music / "old")), ["0007 existing.m4a"])
+
+    def test_cancel_mid_download_kills_children_and_keeps_finished_songs(self):
+        # aaa downloads, then "slow" hangs mid-download with a child process and a part file.
+        self.call("/api/jobs", {"links": "https://www.youtube.com/watch?v=aaa&list=PLslow", "album": "old"})
+        self.wait_for(self.pidfile.exists, "slow download did not start")
+        child, ytdlp = map(int, self.pidfile.read_text().split())
+        self.assertTrue(alive(child) and alive(ytdlp))
+        job = self.call("/api/jobs")[1]["jobs"][0]
+        self.assertEqual(job["status"], "downloading")
+        tmp = self.music / tw.TMP_NAME
+        self.assertTrue(any(tmp.rglob("*.part")))
+        self.assertEqual(self.call(f"/api/jobs/{job['id']}/cancel", {}), (200, {"ok": True}))
+        self.wait_for(lambda: not self.call("/api/jobs")[1]["jobs"], "stopped job not removed")
+        self.wait_for(lambda: not alive(child) and not alive(ytdlp), "yt-dlp or its child still running")
+        self.assertEqual(sorted(os.listdir(self.music / "old")), ["0007 existing.m4a", "0008 First - song.m4a"])
+        self.assertFalse(tmp.exists() and any(tmp.iterdir()))
+        # The worker carries on with the next download.
+        self.call("/api/jobs", {"links": "https://youtu.be/one", "album": "old"})
+        self.assertEqual(self.wait_idle()[0]["status"], "done")
+
+    def test_cancel_refuses_finished(self):
+        self.call("/api/jobs", {"links": "https://youtu.be/one", "album": "old"})
+        job = self.wait_idle()[0]
+        self.assertEqual(self.call(f"/api/jobs/{job['id']}/cancel", {})[0], 404)
+
+    # ---- automatic retry
+
+    def test_auto_retry_backoff_with_fake_clock(self):
+        hour = 3600
+        self.call("/api/jobs", {"links": "https://www.youtube.com/watch?v=bad", "album": "old"})
+        job = self.wait_idle()[0]
+        self.assertEqual(job["status"], "failed")
+        item = job["items"][0]
+        self.assertEqual(item["fails"], 1)
+        self.assertEqual(item["retry_at"], self.clock.t + hour)
+        self.assertEqual(job["retry_in"], hour)
+        start = self.clock.t
+        # The wait doubles after each failure: retried at +1 h, then +2 h later, then +4 h later.
+        tried = []
+        for minutes in range(0, 10 * 60, 1):
+            self.clock.t = start + minutes * 60
+            if self.jobs.auto_retry():
+                tried.append(minutes)
+                self.wait_idle()
+        self.assertEqual(tried, [60, 180, 420])
+        item = self.wait_idle()[0]["items"][0]
+        self.assertEqual(item["fails"], 4)
+        self.assertEqual(item["retry_at"], start + 420 * 60 + 8 * hour)
+
+    def test_auto_retry_at_most_one_an_hour_and_only_failed_songs(self):
+        self.call("/api/jobs", {"links": "https://www.youtube.com/watch?v=aaa&list=PL1", "album": "New", "new": True})
+        self.call("/api/jobs", {"links": "https://youtu.be/private", "album": "old"})
+        self.wait_idle()
+        self.clock.t += 5 * 3600          # both are due
+        first = self.jobs.auto_retry()
+        self.assertIsNotNone(first)
+        self.assertIsNone(self.jobs.auto_retry())   # busy, and less than an hour since
+        self.wait_idle()
+        self.clock.t += 59 * 60
+        self.assertIsNone(self.jobs.auto_retry())
+        self.clock.t += 60
+        second = self.jobs.auto_retry()
+        self.assertNotIn(second, (None, first))
+        jobs = self.wait_idle()
+        pl = next(j for j in jobs if j.get("playlist"))
+        self.assertEqual([i["status"] for i in pl["items"]], ["done", "failed", "done"])
+        self.assertEqual([i.get("fails", 0) for i in pl["items"]], [0, 2, 0])
+        # Songs that were added are not downloaded again.
+        self.assertEqual(sorted(os.listdir(self.music / "New")), ["0001 First - song.m4a", "0003 Third.m4a"])
+
+    def test_auto_retry_waits_for_running_download(self):
+        self.call("/api/jobs", {"links": "https://youtu.be/private", "album": "old"})
+        self.wait_idle()
+        self.clock.t += 2 * 3600
+        self.call("/api/jobs", {"links": "https://youtu.be/slow", "album": "old"})
+        self.wait_for(self.pidfile.exists, "slow download did not start")
+        self.assertIsNone(self.jobs.auto_retry())
+        running = self.call("/api/jobs")[1]["jobs"][0]
+        self.call(f"/api/jobs/{running['id']}/cancel", {})
+        self.wait_idle()
+        self.assertIsNotNone(self.jobs.auto_retry())
+
+    def test_manual_retry_still_works_and_counts(self):
+        self.call("/api/jobs", {"links": "https://youtu.be/private", "album": "old"})
+        job = self.wait_idle()[0]
+        self.assertEqual(job["fails"], 1)
+        self.assertEqual(self.call(f"/api/jobs/{job['id']}/retry", {})[0], 200)
+        job = self.wait_idle()[0]
+        self.assertEqual(job["fails"], 2)
+        self.assertEqual(job["retry_in"], 2 * 3600)
+
+    # ---- playing now
+
+    def test_now_playing_endpoint(self):
+        self.mpd.status = {"state": "pause"}
+        self.mpd.song = {"file": "old/0007 existing.m4a"}
+        self.assertEqual(self.call("/api/now"), (200, {"state": "pause", "album": "old", "song": "existing"}))
 
     def test_albums_hide_dot_folders(self):
         self.assertEqual(self.call("/api/albums")[1], {"albums": ["old"], "songs": {"old": 1}})

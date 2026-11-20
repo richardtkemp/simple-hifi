@@ -17,6 +17,12 @@ Standard library only. Settings come from the environment:
   TPLAYER_PORT    port                     (default 8090)
   TPLAYER_BIND    address                  (default 0.0.0.0)
   TPLAYER_YTDLP   yt-dlp command           (default yt-dlp)
+  TPLAYER_MPD     mpd address, host:port   (default localhost:6600), for "playing now"
+
+A download can be stopped (yt-dlp and everything it started is killed; songs of a
+playlist that were already added stay). A failed download can be removed from the
+list. Failed downloads are tried again by themselves: at most one an hour, each
+song waiting longer after every failure (see retry_delay).
 
   python3 tplayer_web.py          run the server
   python3 tplayer_web.py --help   this text
@@ -24,8 +30,11 @@ Standard library only. Settings come from the environment:
 
 import json
 import os
+import random
 import re
 import shutil
+import signal
+import socket
 import struct
 import subprocess
 import sys
@@ -50,6 +59,11 @@ KEEP_JOBS = 100              # finished jobs kept in the list
 KEEP_SECONDS = 14 * 24 * 3600
 DELETED_NAME = ".deleted"  # hidden too: deleted songs wait here, recoverable by hand
 TMP_NAME = ".tplayer-web-tmp"  # hidden: the music folder's .mpdignore skips dot names
+AUTO_EVERY = 3600            # at most one automatic retry this often (seconds)
+RETRY_BASE = 3600            # wait after the first failure; doubles after each further failure
+RETRY_CAP = 7 * 24 * 3600    # longest wait between automatic retries of one song
+RETRY_JITTER = 0.2           # each wait is spread by +-20% so songs drift apart
+ACTIVE = ("queued", "listing", "downloading", "cancelling")
 
 YOUTUBE_URL = re.compile(
     r"(?:https?://)?(?:[a-z0-9-]+\.)*(?:youtube\.com|youtu\.be|youtube-nocookie\.com)/[^\s<>\"']+",
@@ -142,6 +156,57 @@ def friendly_error(stderr):
     return "Something went wrong with this download. Press Try again; if it fails again, tell the person who set up the player."
 
 
+def retry_delay(fails, r):
+    """Seconds to wait before the automatic retry after the fails-th failure in a row.
+    r is a random number in [0, 1): it spreads the wait by +-RETRY_JITTER.
+    1 h, 2 h, 4 h, 8 h, 16 h, 32 h, 64 h, 128 h, then 7 days for good."""
+    base = min(RETRY_BASE * 2 ** max(0, fails - 1), RETRY_CAP)
+    return base * (1 - RETRY_JITTER + 2 * RETRY_JITTER * r)
+
+
+# --------------------------------------------------------------------------- playing now
+
+def mpd_query(addr, commands, timeout=2.0):
+    """Send commands to mpd; return one {key: value} dict per command. Raises OSError."""
+    host, _, port = addr.rpartition(":")
+    with socket.create_connection((host or "localhost", int(port or 6600)), timeout=timeout) as sock, \
+            sock.makefile("rwb") as f:
+        if not f.readline().startswith(b"OK MPD"):
+            raise OSError("not mpd")
+        out = []
+        for cmd in commands:
+            f.write(cmd.encode() + b"\n")
+            f.flush()
+            reply = {}
+            while True:
+                line = f.readline()
+                if not line:
+                    raise OSError("mpd closed the connection")
+                line = line.decode("utf-8", "replace").rstrip("\n")
+                if line == "OK":
+                    break
+                if line.startswith("ACK"):
+                    raise OSError(line)
+                k, _, v = line.partition(": ")
+                reply.setdefault(k, v)
+            out.append(reply)
+        return out
+
+
+def now_playing(addr):
+    """{"state": "play"|"pause"|"stop"|"off", "album", "song"} as the player sees it."""
+    try:
+        status, song = mpd_query(addr, ["status", "currentsong"])
+    except (OSError, ValueError):
+        return {"state": "off", "album": None, "song": None}
+    state = status.get("state", "stop")
+    file = song.get("file")
+    if state not in ("play", "pause") or not file:
+        return {"state": "stop", "album": None, "song": None}
+    album, _, name = file.rpartition("/")
+    return {"state": state, "album": album.split("/")[0] or None, "song": song_title(name)}
+
+
 # --------------------------------------------------------------------------- icons
 
 def make_png(size):
@@ -185,14 +250,19 @@ def make_png(size):
 class Jobs:
     """The job list, saved to disk after each change, and the one download worker."""
 
-    def __init__(self, music, state, ytdlp):
+    def __init__(self, music, state, ytdlp, clock=time.time, rng=random.random):
         self.music = Path(music)
         self.state = Path(state)
         self.ytdlp = ytdlp
+        self.clock = clock      # for automatic retries (tests pass a fake clock)
+        self.rng = rng
         self.file = self.state / "jobs.json"
-        self.cond = threading.Condition()
+        self.cond = threading.Condition()   # an RLock inside: _place may re-enter it
         self.jobs = []          # oldest first
         self.next_number = {}   # album -> next file number reserved (survives failed items)
+        self.last_auto = 0.0    # when the last automatic retry started
+        self.current = None     # the job the worker is on
+        self.proc = None        # the yt-dlp it is running
         self._load()
 
     # ---- persistence
@@ -207,6 +277,9 @@ class Jobs:
             return
         self.jobs = data.get("jobs", [])
         self.next_number = data.get("next_number", {})
+        self.last_auto = data.get("last_auto", 0.0)
+        # A stop that was under way when the service stopped is finished now.
+        self.jobs = [j for j in self.jobs if j["status"] != "cancelling"]
         # Work that was running when the service stopped starts again.
         for job in self.jobs:
             if job["status"] in ("listing", "downloading"):
@@ -219,7 +292,8 @@ class Jobs:
     def _save(self):
         self.state.mkdir(parents=True, exist_ok=True)
         tmp = self.file.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"jobs": self.jobs, "next_number": self.next_number}, ensure_ascii=False))
+        tmp.write_text(json.dumps({"jobs": self.jobs, "next_number": self.next_number,
+                                   "last_auto": self.last_auto}, ensure_ascii=False))
         os.replace(tmp, self.file)
 
     def _prune(self):
@@ -331,9 +405,106 @@ class Jobs:
                     return True
             return False
 
+    def clear(self, job_id=None):
+        """Remove a failed download (or, with no id, every failed one) from the list.
+        Songs it already added stay. A removed download is never tried again."""
+        with self.cond:
+            before = len(self.jobs)
+            self.jobs = [j for j in self.jobs
+                         if not (j["status"] == "failed" and job_id in (None, j["id"]))]
+            if len(self.jobs) == before:
+                return False
+            self._save()
+            return True
+
+    def cancel(self, job_id):
+        """Stop a waiting or running download and remove it from the list. A running yt-dlp
+        and its children are killed; songs of a playlist that were already added stay."""
+        with self.cond:
+            job = next((j for j in self.jobs if j["id"] == job_id), None)
+            if job is None or job["status"] not in ACTIVE:
+                return False
+            if self.current == job_id:
+                job["status"] = "cancelling"     # the worker removes it once yt-dlp is gone
+                self._kill()
+            else:
+                self.jobs.remove(job)
+            self._save()
+            return True
+
+    def _kill(self):
+        """Kill the running yt-dlp and everything it started (its own process group)."""
+        if self.proc is not None and self.proc.poll() is None:
+            try:
+                os.killpg(self.proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+    def _cancelled(self, job):
+        return job["status"] == "cancelling"
+
+    # ---- automatic retries
+
+    def _failed_units(self):
+        """The things that can be retried on their own: each failed song, and each failed
+        link that never got as far as a song list. Pairs of (job, unit)."""
+        for job in self.jobs:
+            if job["status"] != "failed":
+                continue
+            if job["items"]:
+                for item in job["items"]:
+                    if item["status"] == "failed":
+                        yield job, item
+            else:
+                yield job, job
+
+    def _note_failure(self, unit):
+        """Count a failure of a song (or link) and set when it is tried again by itself."""
+        unit["fails"] = unit.get("fails", 0) + 1
+        unit["retry_at"] = self.clock() + retry_delay(unit["fails"], self.rng())
+
+    def auto_retry(self):
+        """Called often (every minute). Starts at most one retry per AUTO_EVERY seconds: the
+        failed song whose own wait ran out first, and only while nothing else is downloading."""
+        with self.cond:
+            now = self.clock()
+            if now - self.last_auto < AUTO_EVERY:
+                return None
+            if any(j["status"] in ACTIVE for j in self.jobs):
+                return None
+            due = [(u.get("retry_at", 0), job, u) for job, u in self._failed_units()
+                   if u.get("retry_at", 0) <= now]
+            if not due:
+                return None
+            _, job, unit = min(due, key=lambda d: d[0])
+            unit["status"] = "queued"
+            unit["error"] = unit["detail"] = None
+            job["status"] = "queued"
+            job["error"] = job["detail"] = None
+            self.last_auto = now
+            self._save()
+            self.cond.notify_all()
+            return job["id"]
+
+    def auto_loop(self):
+        while True:
+            time.sleep(60)
+            try:
+                self.auto_retry()
+            except Exception:
+                traceback.print_exc()
+
     def snapshot(self):
         with self.cond:
-            return json.loads(json.dumps(self.jobs[::-1]))
+            jobs = json.loads(json.dumps(self.jobs[::-1]))
+            now = self.clock()
+            soonest = self.last_auto + AUTO_EVERY
+            for job in jobs:
+                if job["status"] == "failed":
+                    units = [i for i in job["items"] if i["status"] == "failed"] or [job]
+                    at = max(min(u.get("retry_at", 0) for u in units), soonest)
+                    job["retry_in"] = max(0, int(at - now))
+            return jobs
 
     # ---- worker
 
@@ -344,33 +515,61 @@ class Jobs:
                 while job is None:
                     self.cond.wait()
                     job = next((j for j in self.jobs if j["status"] == "queued"), None)
+                self.current = job["id"]
             try:
                 self._do_job(job)
             except Exception as e:  # keep the worker alive whatever happens
                 print(f"tplayer-web: job {job['id']} crashed:", file=sys.stderr)
                 traceback.print_exc()
                 with self.cond:
-                    job["status"] = "failed"
-                    job["error"] = friendly_error(str(e))
-                    job["detail"] = repr(e)
-                    job["finished"] = time.time()
+                    if not self._cancelled(job):
+                        job["status"] = "failed"
+                        job["error"] = friendly_error(str(e))
+                        job["detail"] = repr(e)
+                        job["finished"] = time.time()
+                        self._note_failure(job)
                     self._save()
+            finally:
+                with self.cond:
+                    self.current = None
+                    if self._cancelled(job) and job in self.jobs:
+                        self.jobs.remove(job)
+                        self._save()
 
     def _set(self, obj, **kw):
         with self.cond:
             obj.update(kw)
             self._save()
 
+    def _set_status(self, job, status):
+        """Set a job's status unless it is being stopped (a stop must not be undone)."""
+        with self.cond:
+            if not self._cancelled(job):
+                job["status"] = status
+                self._save()
+
     def _run(self, args, timeout, on_line=None):
         """Run yt-dlp; return (exit code, stdout lines, stderr text)."""
         cmd = self.ytdlp.split() + ["--js-runtimes", "node", "--no-colors", "--ignore-config"] + args
+        # Its own process group, so a stop kills Node and ffmpeg along with it.
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                                encoding="utf-8", errors="replace")
+                                encoding="utf-8", errors="replace", start_new_session=True)
+        with self.cond:
+            self.proc = proc
+            job = next((j for j in self.jobs if j["id"] == self.current), None)
+            if job is not None and self._cancelled(job):   # stopped while starting
+                self._kill()
         err = []
         t = threading.Thread(target=lambda: err.extend(proc.stderr), daemon=True)
         t.start()
         killed = []
-        timer = threading.Timer(timeout, lambda: (killed.append(1), proc.kill()))
+        def on_timeout():
+            killed.append(1)
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        timer = threading.Timer(timeout, on_timeout)
         timer.start()
         out = []
         try:
@@ -381,7 +580,11 @@ class Jobs:
             code = proc.wait()
         finally:
             timer.cancel()
+            with self.cond:
+                self.proc = None
         t.join(5)
+        proc.stdout.close()
+        proc.stderr.close()
         stderr = "".join(err)
         if killed:
             stderr += f"\ntimed out after {timeout} s"
@@ -389,8 +592,10 @@ class Jobs:
 
     def _list(self, job):
         """Fill job["items"] with the videos behind job["url"], in playlist order."""
-        self._set(job, status="listing")
+        self._set_status(job, "listing")
         code, out, err = self._run(["--flat-playlist", "--yes-playlist", "-J", job["url"]], LIST_TIMEOUT)
+        if self._cancelled(job):
+            return None
         if code != 0:
             return err or f"yt-dlp exited with {code}"
         info = json.loads("".join(out))
@@ -410,6 +615,8 @@ class Jobs:
             items.append({"id": e.get("id"), "url": url, "title": e.get("title") or e.get("id") or url,
                           "status": "queued", "error": None, "detail": None, "file": None, "percent": None})
         with self.cond:
+            if self._cancelled(job):
+                return None
             self.album_dir(job["album"]).mkdir(mode=0o775, exist_ok=True)  # setgid comes from the music folder
             first = self._reserve(job["album"], len(items))
             for i, item in enumerate(items):
@@ -423,15 +630,24 @@ class Jobs:
     def _do_job(self, job):
         if not job["items"]:
             problem = self._list(job)
-            if problem:
-                self._set(job, status="failed", error=friendly_error(problem), detail=problem[-2000:],
-                          finished=time.time())
+            if self._cancelled(job):
                 return
-        self._set(job, status="downloading")
+            if problem:
+                with self.cond:
+                    job.update(status="failed", error=friendly_error(problem), detail=problem[-2000:],
+                               finished=time.time())
+                    self._note_failure(job)
+                    self._save()
+                return
+        self._set_status(job, "downloading")
         for item in job["items"]:
+            if self._cancelled(job):
+                return
             if item["status"] == "queued":
                 self._download(job, item)
         with self.cond:
+            if self._cancelled(job):
+                return
             failed = sum(1 for i in job["items"] if i["status"] == "failed")
             job["status"] = "failed" if failed else "done"
             if failed:
@@ -439,6 +655,7 @@ class Jobs:
                                 f"{failed} of {len(job['items'])} could not be downloaded. "
                                 "Press Try again to retry them.")
             job["finished"] = time.time()
+            job.pop("retry_at", None)   # a listing failure's wait; the songs keep their own
             self._prune()
             self._save()
 
@@ -477,13 +694,21 @@ class Jobs:
             ], ITEM_TIMEOUT, progress)
             files = [p for p in tmp.iterdir() if p.is_file() and not p.name.endswith((".part", ".ytdl"))
                      and p.name.startswith("audio.")]
-            if code != 0 or len(files) != 1:
-                problem = err or f"yt-dlp exited with {code} and left {len(files)} files"
-                self._set(item, status="failed", percent=None, error=friendly_error(problem),
-                          detail=problem[-2000:])
-                return
-            dest = self._place(job["album"], item, files[0])
-            self._set(item, status="done", percent=100, file=dest.name)
+            with self.cond:     # a stop cannot slip in between this check and the placing
+                if self._cancelled(job):
+                    item.update(status="queued", percent=None)
+                    return
+                if code != 0 or len(files) != 1:
+                    problem = err or f"yt-dlp exited with {code} and left {len(files)} files"
+                    item.update(status="failed", percent=None, error=friendly_error(problem),
+                                detail=problem[-2000:])
+                    self._note_failure(item)
+                    self._save()
+                    return
+                dest = self._place(job["album"], item, files[0])
+                item.update(status="done", percent=100, file=dest.name, fails=0)
+                item.pop("retry_at", None)
+                self._save()
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
@@ -519,7 +744,7 @@ STATIC_FILES = {
 }
 
 
-def make_handler(jobs, icons):
+def make_handler(jobs, icons, mpd="localhost:6600"):
     class Handler(BaseHTTPRequestHandler):
         server_version = "tplayer-web"
 
@@ -563,6 +788,8 @@ def make_handler(jobs, icons):
                     self._json(404, {"error": str(e)})
             elif path == "/api/jobs":
                 self._json(200, {"jobs": jobs.snapshot()})
+            elif path == "/api/now":
+                self._json(200, now_playing(mpd))
             else:
                 self._json(404, {"error": "Not found."})
 
@@ -587,9 +814,11 @@ def make_handler(jobs, icons):
                 except ValueError as e:
                     return self._json(404, {"error": str(e)})
                 return self._json(200, {"ok": True, "album_deleted": gone})
-            m = re.fullmatch(r"/api/jobs/([0-9a-f]+)/retry", path)
+            if path == "/api/clear-failed":
+                return self._json(200, {"ok": jobs.clear()})
+            m = re.fullmatch(r"/api/jobs/([0-9a-f]+)/(retry|clear|cancel)", path)
             if m:
-                ok = jobs.retry(m.group(1))
+                ok = {"retry": jobs.retry, "clear": jobs.clear, "cancel": jobs.cancel}[m.group(2)](m.group(1))
                 return self._json(200 if ok else 404, {"ok": ok})
             self._json(404, {"error": "Not found."})
 
@@ -626,12 +855,14 @@ def main():
     port = int(os.environ.get("TPLAYER_PORT", "8090"))
     bind = os.environ.get("TPLAYER_BIND", "0.0.0.0")
     ytdlp = os.environ.get("TPLAYER_YTDLP", "yt-dlp")
+    mpd = os.environ.get("TPLAYER_MPD", "localhost:6600")
 
     shutil.rmtree(Path(music) / TMP_NAME, ignore_errors=True)  # leftovers from a crash
     jobs = Jobs(music, state, ytdlp)
     threading.Thread(target=jobs.run, daemon=True).start()
+    threading.Thread(target=jobs.auto_loop, daemon=True).start()
     icons = {"/icon-192.png": make_png(192), "/icon-512.png": make_png(512)}
-    server = ThreadingHTTPServer((bind, port), make_handler(jobs, icons))
+    server = ThreadingHTTPServer((bind, port), make_handler(jobs, icons, mpd))
     server.daemon_threads = True
     print(f"tplayer-web: serving {music} on http://{bind}:{port}", file=sys.stderr)
     server.serve_forever()
