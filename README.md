@@ -18,7 +18,7 @@
 
 ## 🎵 What it does
 
-| | |
+| You use | It does |
 |---|---|
 | **Top button** | Play / pause. Press twice quickly for the next song. |
 | **Bottom button** | Next playlist. Each playlist starts again where it was left. |
