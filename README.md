@@ -133,3 +133,7 @@ cd web && python3 -m unittest test_tplayer_web
 ```
 
 They use a fake `yt-dlp` and a fake mpd, so they run anywhere.
+
+## 📄 Licence
+
+[MIT](LICENSE)
