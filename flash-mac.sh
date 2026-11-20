@@ -1,6 +1,6 @@
 #!/bin/bash
 # Flash Raspberry Pi OS Lite (32-bit) to an SD card on a Mac, set it up to join
-# Wi-Fi and accept your ssh key, and make it install the music player
+# Wi-Fi and accept your ssh key, and make it install the simple-hifi music player
 # (setup.sh) by itself on first boot.
 #
 #   ./flash-mac.sh            list external disks
@@ -23,11 +23,11 @@
 #
 # Needs, next to this script: setup.sh, web/ and wifi.env (WIFI_SSID=..., WIFI_PASS=...).
 # Optional: extra-keys.pub, more ssh public keys (one per line) that may log in.
-# Optional env: PI_USER (default: your Mac username), PI_HOST (default: simple-hifi).
+# Optional env: PI_USER (default: your Mac username), PI_HOST (default: local.env, else simple-hifi).
 #               PI_KEY: the public key file to use (default: the first of ~/.ssh/id_ed25519.pub,
 #               id_ecdsa.pub, id_rsa.pub).
 #               PI_SSH: where the Pi answers ssh (default: $PI_USER@$PI_HOST.local).
-#               BACKUP: where saved music and settings go (default: ~/simple-hifi-backup).
+#               BACKUP: where saved music and settings go (default: ~/$PI_HOST-backup).
 #               PI_MUSIC: the music folder on the Pi (default: /srv/music).
 #               NO_RESTORE=1: flash a clean player even though $BACKUP holds a saved one.
 #
@@ -36,10 +36,14 @@ set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 PI_USER=${PI_USER:-$(id -un)}
-PI_HOST=${PI_HOST:-simple-hifi}
+# Your own names (git-ignored; see local.env.example). The environment wins over the file.
+env_pi_host=${PI_HOST:-}
+# shellcheck source=/dev/null
+if [[ -f $HERE/local.env ]]; then source "$HERE/local.env"; fi
+PI_HOST=${env_pi_host:-${PI_HOST:-simple-hifi}}
 PI_SSH=${PI_SSH:-$PI_USER@$PI_HOST.local}
 PI_MUSIC=${PI_MUSIC:-/srv/music}
-BACKUP=${BACKUP:-$HOME/simple-hifi-backup}
+BACKUP=${BACKUP:-$HOME/$PI_HOST-backup}
 CACHE=${CACHE:-$HOME/Downloads}
 # 32-bit: on a Pi 3 the 64-bit kernel drops USB audio frames under load
 # (raspberrypi/linux#3795); setup.sh explains.
@@ -185,7 +189,7 @@ runcmd:
 # Reboot once cloud-init has finished, so the audio and kernel settings apply.
 power_state:
   mode: reboot
-  message: "simple-hifi player installed; rebooting"
+  message: "simple-hifi installed; rebooting"
   condition: true
 EOF
 
@@ -205,6 +209,7 @@ EOF
 
   mkdir -p "$dir/tplayer/web/static"
   cp "$HERE/setup.sh" "$dir/tplayer/setup.sh"
+  if [[ -f $HERE/local.env ]]; then cp "$HERE/local.env" "$dir/tplayer/local.env"; fi
   cp "$HERE/web/tplayer_web.py" "$dir/tplayer/web/"
   cp "$HERE"/web/static/* "$dir/tplayer/web/static/"
   # The saved settings; setup.sh restores them on first boot, then deletes this copy.

@@ -1,6 +1,6 @@
 {
-  "name": "Music",
-  "short_name": "Music",
+  "name": "PLAYER_TITLE",
+  "short_name": "PLAYER_TITLE",
   "description": "Add YouTube songs to the music player",
   "id": "/",
   "start_url": "/",

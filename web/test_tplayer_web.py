@@ -182,6 +182,18 @@ class NowPlaying(unittest.TestCase):
         self.assertEqual(tw.now_playing(addr)["state"], "off")
 
 
+class Title(unittest.TestCase):
+    def test_title_fills_page_and_manifest(self):
+        title = 'Zoë\'s <b>"music"</b>'
+        page = tw.fill_title("index.html", (tw.STATIC / "index.html").read_bytes(), title).decode()
+        self.assertNotIn("PLAYER_TITLE", page)
+        self.assertIn("<title>Zoë&#x27;s &lt;b&gt;&quot;music&quot;&lt;/b&gt;</title>", page)
+        manifest = tw.fill_title("manifest.webmanifest", (tw.STATIC / "manifest.webmanifest").read_bytes(), title)
+        data = json.loads(manifest)
+        self.assertEqual(data["name"], title)
+        self.assertEqual(data["short_name"], title)
+
+
 class Flow(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

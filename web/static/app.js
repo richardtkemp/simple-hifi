@@ -1,4 +1,4 @@
-// Music: paste or share YouTube links, pick an album, watch the downloads.
+// simple-hifi: paste or share YouTube links, pick an album, watch the downloads.
 "use strict";
 
 const $ = (id) => document.getElementById(id);

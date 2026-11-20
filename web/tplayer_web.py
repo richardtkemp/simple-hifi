@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""simple-hifi player: a small web page for adding YouTube audio to an album.
+"""simple-hifi: a small web page for adding YouTube audio to an album.
 
 Paste one or more YouTube links (videos or playlists), choose an album (a folder
 under the music directory) or name a new one, and the Pi downloads the audio with
@@ -18,6 +18,7 @@ Standard library only. Settings come from the environment:
   TPLAYER_BIND    address                  (default 0.0.0.0)
   TPLAYER_YTDLP   yt-dlp command           (default yt-dlp)
   TPLAYER_MPD     mpd address, host:port   (default localhost:6600), for "playing now"
+  TPLAYER_TITLE   page and app name        (default Music)
 
 A download can be stopped (yt-dlp and everything it started is killed; songs of a
 playlist that were already added stay). A failed download can be removed from the
@@ -28,6 +29,7 @@ song waiting longer after every failure (see retry_delay).
   python3 tplayer_web.py --help   this text
 """
 
+import html
 import json
 import os
 import random
@@ -768,7 +770,16 @@ STATIC_FILES = {
 }
 
 
-def make_handler(jobs, icons, mpd="localhost:6600"):
+def fill_title(name, body, title):
+    """Put the configured page name in place of PLAYER_TITLE in index.html and the manifest."""
+    if name == "index.html":
+        return body.replace(b"PLAYER_TITLE", html.escape(title).encode("utf-8"))
+    if name == "manifest.webmanifest":
+        return body.replace(b"PLAYER_TITLE", json.dumps(title, ensure_ascii=False)[1:-1].encode("utf-8"))
+    return body
+
+
+def make_handler(jobs, icons, mpd="localhost:6600", title="Music"):
     class Handler(BaseHTTPRequestHandler):
         server_version = "tplayer-web"
 
@@ -798,6 +809,7 @@ def make_handler(jobs, icons, mpd="localhost:6600"):
                 body = (STATIC / name).read_bytes()
                 if name == "index.html":
                     body = body.replace(b"APPJS_VERSION", str((STATIC / "app.js").stat().st_mtime_ns).encode())
+                body = fill_title(name, body, title)
                 self._send(200, body, ctype)
             elif path in icons:
                 self._send(200, icons[path], "image/png", "max-age=86400")
@@ -880,13 +892,14 @@ def main():
     bind = os.environ.get("TPLAYER_BIND", "0.0.0.0")
     ytdlp = os.environ.get("TPLAYER_YTDLP", "yt-dlp")
     mpd = os.environ.get("TPLAYER_MPD", "localhost:6600")
+    title = os.environ.get("TPLAYER_TITLE") or "Music"
 
     shutil.rmtree(Path(music) / TMP_NAME, ignore_errors=True)  # leftovers from a crash
     jobs = Jobs(music, state, ytdlp)
     threading.Thread(target=jobs.run, daemon=True).start()
     threading.Thread(target=jobs.auto_loop, daemon=True).start()
     icons = {"/icon-192.png": make_png(192), "/icon-512.png": make_png(512)}
-    server = ThreadingHTTPServer((bind, port), make_handler(jobs, icons, mpd))
+    server = ThreadingHTTPServer((bind, port), make_handler(jobs, icons, mpd, title))
     server.daemon_threads = True
     print(f"tplayer-web: serving {music} on http://{bind}:{port}", file=sys.stderr)
     server.serve_forever()

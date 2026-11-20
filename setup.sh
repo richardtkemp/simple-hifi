@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# the music player: Raspberry Pi 3 + USB speakers + Sonoff ZBDongle-E + IKEA RODRET.
+# simple-hifi: a music player on a Raspberry Pi 3 + USB speakers + Sonoff ZBDongle-E + IKEA RODRET.
 #
 # Run once on a fresh Raspberry Pi OS Lite (32-bit), logged in as your normal user.
 # 32-bit, because a Pi 3's USB driver loses its fast interrupt (FIQ) under the 64-bit
@@ -44,10 +44,15 @@ WIFI_COUNTRY=GB
 WEB_PORT=8090
 WEB_LIB=/usr/local/lib/tplayer-web
 YTDLP=/usr/local/bin/yt-dlp
-# Cloudflare Tunnel token for music.example.com. A secret: put it there by hand
+# Cloudflare Tunnel token for the public web page. A secret: put it there by hand
 # (root, mode 600); never in this repo. No file = no tunnel, and that step is skipped.
 CF_TOKEN=/etc/cloudflared/tplayer.token
 HERE=$(dirname "$(readlink -f "$0")")
+# Your own names (git-ignored; see local.env.example): PLAYER_TITLE, PUBLIC_HOST.
+PLAYER_TITLE="" PUBLIC_HOST=""
+# shellcheck source=/dev/null
+if [[ -f $HERE/local.env ]]; then source "$HERE/local.env"; fi
+PLAYER_TITLE=${PLAYER_TITLE:-Music}
 RESTORE=$HERE/restore/state.tgz
 TPLAYER_LOG=/var/log/tplayer.log
 # Node.js on 32-bit (armhf): NodeSource's armhf packages stopped at 22.15, and Node 24 has
@@ -647,7 +652,7 @@ fi
 
 cat > /etc/systemd/system/tplayer-web.service <<EOF
 [Unit]
-Description=simple-hifi player web page (add YouTube music to an album)
+Description=simple-hifi web page (add YouTube music to an album)
 After=network-online.target
 Wants=network-online.target
 
@@ -660,6 +665,7 @@ StateDirectory=tplayer-web
 Environment=TPLAYER_MUSIC=$MUSIC
 Environment=TPLAYER_PORT=$WEB_PORT
 Environment=TPLAYER_YTDLP=$YTDLP
+Environment="TPLAYER_TITLE=${PLAYER_TITLE//%/%%}"
 ExecStart=/usr/bin/python3 $WEB_LIB/tplayer_web.py
 Nice=10
 Restart=always
@@ -696,7 +702,7 @@ if [[ -f $CF_TOKEN ]]; then
   fi
   cat > /etc/systemd/system/cloudflared-tplayer.service <<EOF
 [Unit]
-Description=Cloudflare Tunnel for music.example.com
+Description=Cloudflare Tunnel for ${PUBLIC_HOST:-the web page}
 After=network-online.target
 Wants=network-online.target
 
